@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -15,8 +15,8 @@ const FILTERS = [
   { key: 'formats[]', source: 'formats', label: 'Formats', multiple: true },
   { key: 'languages[]', source: 'languages', label: 'Languages', multiple: true },
   { key: 'bands[]', source: 'timeBands', label: 'Time bands', multiple: true },
-  { key: 'sort', source: 'sorts', label: 'Sort' },
 ];
+const MOVIES_PER_PAGE = 4;
 
 const unwrap = (response) => response?.data?.data ?? response?.data ?? response;
 
@@ -88,6 +88,28 @@ const formatDateTime = (value) => {
   }).format(date);
 };
 
+const formatSessionTime = (session) => {
+  const value = session.startsAt || session.starts_at || session.start_time || session.datetime || session.date;
+  if (!value) return 'Time TBA';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat('en', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+};
+
+const getWeekDates = () => {
+  const start = new Date();
+  if (Number.isNaN(start.getTime())) return [];
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    return {
+      value: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`,
+      weekday: new Intl.DateTimeFormat('en', { weekday: 'short' }).format(date),
+      day: new Intl.DateTimeFormat('en', { day: 'numeric' }).format(date),
+    };
+  });
+};
+
 export default function Sessions() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { executeProtected } = useAuth();
@@ -96,7 +118,6 @@ export default function Sessions() {
   const [filterOptions, setFilterOptions] = useState(null);
   const [filtersError, setFiltersError] = useState('');
   const [sessions, setSessions] = useState([]);
-  const [pagination, setPagination] = useState(null);
   const [loading, setLoading] = useState(true);
   const [sessionsError, setSessionsError] = useState('');
   const [activeSession, setActiveSession] = useState(null);
@@ -114,6 +135,14 @@ export default function Sessions() {
   const [payment, setPayment] = useState({ fullName: '', email: '', mobileNumber: '', cardNumber: '', expiry: '', cvv: '' });
   const [paymentErrors, setPaymentErrors] = useState({});
   const queryString = searchParams.toString();
+  const filterParams = new URLSearchParams(searchParams);
+  filterParams.delete('page');
+  const filtersQueryString = filterParams.toString();
+  const queryStringRef = useRef(queryString);
+
+  useEffect(() => {
+    queryStringRef.current = queryString;
+  }, [queryString]);
 
   useEffect(() => {
     getFilterOptions()
@@ -123,26 +152,40 @@ export default function Sessions() {
 
   useEffect(() => {
     let cancelled = false;
-    const currentParams = new URLSearchParams(queryString);
+    const currentParams = new URLSearchParams(filtersQueryString);
     const params = {};
     for (const key of ['venues[]', 'formats[]', 'languages[]', 'bands[]']) {
       const values = currentParams.getAll(key);
       if (values.length) params[key.slice(0, -2)] = values;
     }
-    for (const key of ['date', 'search', 'sort', 'page']) {
+    for (const key of ['date', 'search', 'sort']) {
       const value = currentParams.get(key);
       if (value) params[key] = value;
     }
     getSessions(params)
-      .then((response) => {
+      .then(async (response) => {
         if (!cancelled) {
           const payload = unwrap(response);
           const meta = response.data?.meta || response.data?.data?.meta || payload?.meta || null;
-          setSessions(flattenSessionGroups(payload));
-          setPagination(meta);
+          const backendPages = Math.max(1, Number(meta?.lastPage || 1));
+          const remainingResponses = await Promise.all(
+            Array.from({ length: backendPages - 1 }, (_, index) => getSessions({ ...params, page: index + 2 }))
+          );
+          if (cancelled) return;
+          const allSessions = [
+            ...flattenSessionGroups(payload),
+            ...remainingResponses.flatMap((pageResponse) => flattenSessionGroups(unwrap(pageResponse))),
+          ];
+          const uniqueSessions = [...new Map(allSessions.map((session, index) => [
+            session.id ?? `${session.movie?.id ?? session.movie_id ?? session.movie?.title ?? session.movie_title ?? session.title ?? 'sessions'}-${session.startsAt ?? session.starts_at ?? session.start_time ?? index}`,
+            session,
+          ])).values()];
+          setSessions(uniqueSessions);
           setSessionsError('');
           if (!currentParams.has('date') && meta?.date) {
             currentParams.set('date', meta.date);
+            const displayPage = new URLSearchParams(queryStringRef.current).get('page');
+            if (displayPage) currentParams.set('page', displayPage);
             setLoading(true);
             setSearchParams(currentParams, { replace: true });
           }
@@ -158,7 +201,7 @@ export default function Sessions() {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [queryString, setSearchParams]);
+  }, [filtersQueryString, setSearchParams]);
 
   const updateFilter = (key, value) => {
     const nextParams = new URLSearchParams(searchParams);
@@ -167,9 +210,11 @@ export default function Sessions() {
       value.forEach((entry) => nextParams.append(key, entry));
     } else if (value) nextParams.set(key, value);
     else nextParams.delete(key);
-    if (key !== 'page') nextParams.set('page', '1');
-    setLoading(true);
-    setSessionsError('');
+    if (key !== 'page') {
+      nextParams.set('page', '1');
+      setLoading(true);
+      setSessionsError('');
+    }
     setSearchParams(nextParams);
   };
 
@@ -373,7 +418,54 @@ export default function Sessions() {
     return ticketType?.blockedFromRatingAge == null || minAge < ticketType.blockedFromRatingAge;
   });
   const currentPage = Number(searchParams.get('page') || 1);
-  const lastPage = Number(pagination?.lastPage || 1);
+  const weekDates = getWeekDates();
+  const activeFilterCount = FILTERS.reduce((count, { key }) => count + searchParams.getAll(key).length, 0) +
+    Number(Boolean(searchParams.get('search'))) + Number(Boolean(searchParams.get('sort')));
+  const renderFilter = ({ key, source, label }) => {
+    const options = source === 'venues' ? venueOptions : source === 'formats' ? allowedFormats : getOptions(filterOptions, source);
+    const selected = searchParams.getAll(key);
+    return (
+      <fieldset key={key} className="border-t border-white/5 py-3">
+        <legend className="mb-2 text-[9px] font-medium uppercase text-gray-400">{label}</legend>
+        <div className="space-y-1.5">
+          {options.map((option) => (
+            <label key={option.value} className="flex cursor-pointer items-center gap-2 text-[11px] leading-4 text-gray-200">
+              <input
+                type="checkbox"
+                checked={selected.includes(String(option.value))}
+                onChange={(event) => updateFilter(key, event.target.checked
+                  ? [...selected, String(option.value)]
+                  : selected.filter((value) => value !== String(option.value))
+                )}
+                className="h-3 w-3 shrink-0 accent-red-500"
+              />
+              <span className="truncate">{option.label}</span>
+            </label>
+          ))}
+          {!options.length && <p className="text-[10px] text-gray-500">No options available</p>}
+        </div>
+      </fieldset>
+    );
+  };
+  const groupedSessions = sessions.reduce((groups, session) => {
+    const movie = session.movie || {};
+    const key = movie.id ?? session.movie_id ?? session.movieId ?? movie.title ?? session.movie_title ?? session.title ?? 'sessions';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(session);
+    return groups;
+  }, new Map());
+  const lastPage = Math.max(1, Math.ceil(groupedSessions.size / MOVIES_PER_PAGE));
+  const pageItems = lastPage <= 5
+    ? Array.from({ length: lastPage }, (_, index) => index + 1)
+    : currentPage <= 3
+      ? [1, 2, 3, 'ellipsis', lastPage]
+      : currentPage >= lastPage - 2
+        ? [1, 'ellipsis', lastPage - 2, lastPage - 1, lastPage]
+        : [1, 'ellipsis', currentPage - 1, currentPage, currentPage + 1, 'ellipsis', lastPage];
+  const visibleMovieGroups = [...groupedSessions.entries()].slice(
+    (currentPage - 1) * MOVIES_PER_PAGE,
+    currentPage * MOVIES_PER_PAGE
+  );
 
   useEffect(() => {
     if (!hold?.expiresAt || !activeSession) return undefined;
@@ -398,48 +490,41 @@ export default function Sessions() {
   }, [hold?.id, hold?.expiresAt, activeSession]);
 
   return (
-    <div className="space-y-8 pb-16">
-      <div>
-        <h1 className="text-2xl font-black uppercase tracking-wider text-white">Sessions & Schedule</h1>
-        <p className="mt-1 text-sm text-gray-400">Choose a session to view available seats.</p>
-      </div>
+    <div className="pb-16">
+      <header className="mb-6">
+        <h1 className="text-2xl font-bold text-white">Sessions</h1>
+        <p className="mt-1 text-xs text-gray-400">Browse showtimes across all venues</p>
+      </header>
 
-      <section className="space-y-3 border-y border-gray-800 py-5">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {FILTERS.map(({ key, source, label, multiple }) => {
-            const options = source === 'venues' ? venueOptions : source === 'formats' ? allowedFormats : getOptions(filterOptions, source);
-            return (
-              <label key={key} className="space-y-1 text-xs font-semibold text-gray-400">
-                <span>{label}</span>
-                <select
-                  multiple={multiple}
-                  value={multiple ? searchParams.getAll(key) : searchParams.get(key) || ''}
-                  onChange={(event) => updateFilter(key, multiple
-                    ? [...event.target.selectedOptions].map((option) => option.value)
-                    : event.target.value
-                  )}
-                  disabled={!options.length}
-                  className={`w-full rounded-lg border border-gray-800 bg-[#161B26] px-3 py-2.5 text-sm text-white disabled:opacity-50 ${multiple ? 'min-h-24' : ''}`}
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(170px,210px)_minmax(0,1fr)]">
+        <aside className="rounded-lg bg-[#1b1d32] p-4 text-white">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-sm font-semibold">Filters</h2>
+          </div>
+
+          {FILTERS.slice(0, 1).map(renderFilter)}
+
+          <fieldset className="border-t border-white/5 py-3">
+            <legend className="mb-2 text-[9px] font-medium uppercase text-gray-400">Date</legend>
+            <div className="grid grid-cols-4 gap-1.5">
+              {weekDates.map((date) => (
+                <button
+                  key={date.value}
+                  type="button"
+                  aria-pressed={searchParams.get('date') === date.value}
+                  onClick={() => updateFilter('date', date.value)}
+                  className={`rounded px-1 py-1.5 text-center text-[9px] transition ${searchParams.get('date') === date.value ? 'bg-red-500 text-white' : 'bg-white/5 text-gray-300 hover:bg-white/10'}`}
                 >
-                  {!multiple && <option value="">Default {label.toLowerCase()}</option>}
-                  {options.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
-              </label>
-            );
-          })}
-          <label className="space-y-1 text-xs font-semibold text-gray-400">
-            <span>Date</span>
-            <input type="date" value={searchParams.get('date') || ''} onChange={(event) => updateFilter('date', event.target.value)} className="w-full rounded-lg border border-gray-800 bg-[#161B26] px-3 py-2.5 text-sm text-white" />
-          </label>
-          <label className="space-y-1 text-xs font-semibold text-gray-400">
-            <span>Search films</span>
-            <input type="search" value={searchParams.get('search') || ''} onChange={(event) => updateFilter('search', event.target.value)} placeholder="Film title" className="w-full rounded-lg border border-gray-800 bg-[#161B26] px-3 py-2.5 text-sm text-white placeholder:text-gray-500" />
-          </label>
-        </div>
-        <div className="flex items-center justify-between gap-4">
-          {filtersError && <p role="alert" className="text-sm text-red-400">{filtersError}</p>}
+                  <span className="block">{date.weekday}</span>
+                  <span className="block font-semibold">{date.day}</span>
+                </button>
+              ))}
+            </div>
+          </fieldset>
+
+          {FILTERS.slice(1).map(renderFilter)}
+
+          {filtersError && <p role="alert" className="border-t border-white/5 pt-3 text-[11px] text-red-400">{filtersError}</p>}
           <button
             type="button"
             onClick={() => {
@@ -448,58 +533,150 @@ export default function Sessions() {
               setSearchParams({});
             }}
             disabled={!queryString}
-            className="ml-auto text-xs font-semibold text-gray-400 transition hover:text-white disabled:opacity-40"
+            className="w-full rounded-full border border-gray-500 px-3 py-1.5 text-[10px] font-semibold text-gray-200 transition hover:border-gray-300 hover:text-white disabled:opacity-40"
           >
             Clear filters
           </button>
-        </div>
-      </section>
+          <p className="border-t border-white/5 pt-3 text-center text-[9px] text-gray-500">
+            {activeFilterCount} {activeFilterCount === 1 ? 'filter' : 'filters'} active
+          </p>
+        </aside>
 
-      {sessionsError && <p role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">{sessionsError}</p>}
-      {pagination?.totalSessions !== undefined && <p className="text-sm text-gray-400">Showing {pagination.totalSessions} sessions across {pagination.totalMovies} movies</p>}
-      {loading ? <p className="py-12 text-center text-gray-400">Loading sessions...</p> : sessions.length ? (
-        <div className="divide-y divide-gray-800">
-          {sessions.map((session, index) => {
-            const id = session.id;
-            const poster = session.movie?.posterUrl || session.movie?.poster_url || session.poster_url || session.movie?.cover;
-            const price = session.price ?? session.ticketPrice ?? session.ticket_price ?? session.movie?.price;
-            const soldOut = session.isSoldOut;
-            return (
-              <article key={id ?? index} className="flex flex-wrap items-center gap-4 py-5">
-                <div className="h-20 w-14 shrink-0 overflow-hidden rounded-lg bg-[#1A202C]">
-                  {poster && <img src={poster} alt="" className="h-full w-full object-cover" />}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <h2 className="truncate font-bold text-white">{sessionTitle(session)}</h2>
-                  <p className="mt-1 text-sm text-gray-400">{sessionVenue(session)}</p>
-                  <p className="mt-1 text-sm text-gray-300">{sessionTime(session)}</p>
-                  <p className="mt-1 text-xs text-gray-500">
-                    {[session.format?.name || session.format, session.language?.name || session.language, session.movie?.ageRating?.label].filter(Boolean).join(' · ')}
-                  </p>
-                </div>
-                <div className="flex items-center gap-4">
-                  {price !== undefined && <span className="text-sm font-bold text-white">₾ {price}</span>}
-                  {session.seatsLeft !== undefined && <span className="text-xs text-gray-400">{session.seatsLeft} seats</span>}
-                  <button
-                    type="button"
-                    onClick={() => executeProtected((authenticatedUser) => openBooking(session, authenticatedUser))}
-                    disabled={!id || soldOut}
-                    className="rounded-lg bg-red-500 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-red-600 disabled:opacity-40"
-                  >
-                    {soldOut ? 'Sold out' : 'Choose seats'}
-                  </button>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      ) : !sessionsError ? <p className="py-12 text-center text-gray-400">No sessions match these filters.</p> : null}
+        <section className="min-w-0">
+          <div className="mb-4 flex items-center justify-between gap-4 text-[10px] text-gray-300">
+            <p>
+              {groupedSessions.size
+                ? `Showing ${(currentPage - 1) * MOVIES_PER_PAGE + 1}-${Math.min(currentPage * MOVIES_PER_PAGE, groupedSessions.size)} of ${groupedSessions.size} movies`
+                : '0 movies'}
+            </p>
+            <label className="flex items-center gap-1.5 whitespace-nowrap text-gray-400">
+              Sort:
+              <select
+                value={searchParams.get('sort') || ''}
+                onChange={(event) => updateFilter('sort', event.target.value)}
+                className="max-w-40 bg-transparent font-semibold text-white outline-none"
+              >
+                <option value="">Showtime: earliest first</option>
+                {getOptions(filterOptions, 'sorts').map((option) => (
+                  <option key={option.value} value={option.value} className="bg-[#111426]">{option.label}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {sessionsError && <p role="alert" className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-300">{sessionsError}</p>}
+          {loading ? <p className="py-12 text-center text-sm text-gray-400">Loading sessions...</p> : groupedSessions.size ? (
+            <div className="divide-y divide-white/10">
+              {visibleMovieGroups.map(([movieKey, movieSessions]) => {
+                const firstSession = movieSessions[0];
+                const movie = firstSession.movie || {};
+                const poster = movie.posterUrl || movie.poster_url || firstSession.poster_url || movie.cover;
+                const runtime = movie.runtimeMinutes || movie.runtime_minutes || movie.duration || firstSession.runtimeMinutes;
+                const ageRating = movie.ageRating?.code || movie.age_rating?.code || movie.age_limit || '';
+                return (
+                  <article key={movieKey} className="min-w-0 py-4">
+                    <div className="mb-2 flex items-center gap-2">
+                      <div className="h-10 w-7 shrink-0 overflow-hidden rounded bg-[#1a2030]">
+                        {poster && <img src={poster} alt="" className="h-full w-full object-cover" />}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <h2 className="truncate text-xs font-bold text-white">{sessionTitle(firstSession)}</h2>
+                          {ageRating && <span className="rounded bg-red-500/15 px-1 py-0.5 text-[8px] font-bold text-red-400">{ageRating}</span>}
+                        </div>
+                        <p className="text-[9px] text-gray-500">{runtime ? `${runtime} min` : 'Movie'} · {movieSessions.length} showtimes</p>
+                      </div>
+                    </div>
+
+                    <div className="flex snap-x gap-2 overflow-x-auto pb-1">
+                      {movieSessions.map((session, index) => {
+                        const id = session.id;
+                        const price = session.price ?? session.ticketPrice ?? session.ticket_price ?? movie.price;
+                        const seatsLeft = session.seatsLeft ?? session.seats_left ?? session.availableSeats ?? session.available_seats ?? session.remainingSeats ?? session.remaining_seats;
+                        const soldOut = session.isSoldOut || session.is_sold_out || Number(seatsLeft) === 0;
+                        const unavailable = !id || soldOut;
+                        const format = session.format?.name || session.format?.label || session.format;
+                        const language = session.language?.name || session.language?.label || session.language;
+                        const venue = sessionVenue(session);
+                        const room = session.hall?.name || session.auditorium?.name || session.room?.name || session.hall_name || session.room_name;
+                        return (
+                          <button
+                            key={id ?? index}
+                            type="button"
+                            onClick={() => executeProtected((authenticatedUser) => openBooking(session, authenticatedUser))}
+                            disabled={unavailable}
+                            className={`group/session w-[132px] shrink-0 snap-start rounded-lg border border-white/5 bg-[#1b1d32] p-2 text-left transition ${unavailable ? 'cursor-not-allowed opacity-40' : 'hover:border-red-500/50 hover:bg-[#22243a]'}`}
+                          >
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-[11px] font-bold text-gray-100">{formatSessionTime(session)}</span>
+                              {format && <span className="max-w-16 truncate rounded bg-white/10 px-1 py-0.5 text-[7px] font-semibold uppercase text-gray-300">{format}</span>}
+                            </div>
+                            <div className="mt-1 flex items-center justify-between gap-1 text-[8px]">
+                              <p className="min-w-0 truncate text-gray-500">{language || 'Original'}{language ? ' · Subtitles' : ' + Subtitles'}</p>
+                              {seatsLeft !== undefined && seatsLeft !== null && (
+                                <span className={`flex shrink-0 items-center gap-1 font-medium ${Number(seatsLeft) <= 5 ? 'text-red-500' : 'text-emerald-400'}`}>
+                                  <svg className="h-3 w-3" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                                    <path d="M2.5 3.25A1.25 1.25 0 0 1 3.75 2h8.5a1.25 1.25 0 0 1 1.25 1.25v2.1a1.65 1.65 0 0 0 0 3.3v2.1A1.25 1.25 0 0 1 12.25 12h-8.5A1.25 1.25 0 0 1 2.5 10.75v-2.1a1.65 1.65 0 0 0 0-3.3v-2.1Zm5.5.5a.65.65 0 0 0-.65.65v.55a.65.65 0 1 0 1.3 0V4.4A.65.65 0 0 0 8 3.75Zm0 3.15a.65.65 0 0 0-.65.65v.55a.65.65 0 1 0 1.3 0v-.55A.65.65 0 0 0 8 6.9Z" />
+                                  </svg>
+                                  {seatsLeft} left
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-1.5 flex items-center justify-between gap-1 text-[8px]">
+                              <span className="min-w-0 truncate text-gray-300">{venue}{room ? ` · ${room}` : ''}</span>
+                              {soldOut ? <span className="shrink-0 text-gray-500">Sold out</span> : (
+                                <span className="shrink-0 font-bold text-white">{price !== undefined ? `₾${price}` : seatsLeft !== undefined ? `${seatsLeft} left` : ''}</span>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : !sessionsError ? <p className="py-12 text-center text-sm text-gray-400">No sessions match these filters.</p> : null}
+        </section>
+      </div>
 
       {!loading && lastPage > 1 && (
-        <nav aria-label="Session pages" className="flex items-center justify-center gap-4 border-t border-gray-800 pt-5">
-          <button type="button" onClick={() => updateFilter('page', String(Math.max(1, currentPage - 1)))} disabled={currentPage <= 1} className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-white disabled:opacity-40">Previous</button>
-          <span className="text-sm text-gray-400">Page {currentPage} of {lastPage}</span>
-          <button type="button" onClick={() => updateFilter('page', String(Math.min(lastPage, currentPage + 1)))} disabled={currentPage >= lastPage} className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-white disabled:opacity-40">Next</button>
+        <nav aria-label="Session pages" className="flex items-center justify-center gap-2 pt-5">
+          <button
+            type="button"
+            onClick={() => updateFilter('page', String(Math.max(1, currentPage - 1)))}
+            disabled={currentPage <= 1}
+            aria-label="Previous page"
+            className="flex h-10 w-10 items-center justify-center rounded-full bg-[#1b1d32] text-gray-300 transition hover:bg-[#252840] disabled:opacity-40"
+          >
+            <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true">
+              <path d="m12 4-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" />
+            </svg>
+          </button>
+          {pageItems.map((page, index) => page === 'ellipsis' ? (
+            <span key={`ellipsis-${index}`} className="flex h-10 w-8 items-center justify-center text-xs text-gray-400">...</span>
+          ) : (
+            <button
+              key={page}
+              type="button"
+              onClick={() => updateFilter('page', String(page))}
+              aria-current={currentPage === page ? 'page' : undefined}
+              className={`flex h-10 min-w-10 items-center justify-center rounded-full px-2 text-xs transition ${currentPage === page ? 'bg-red-500 font-semibold text-white' : 'text-gray-300 hover:bg-[#1b1d32]'}`}
+            >
+              {page}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => updateFilter('page', String(Math.min(lastPage, currentPage + 1)))}
+            disabled={currentPage >= lastPage}
+            aria-label="Next page"
+            className="flex h-10 w-10 items-center justify-center rounded-full bg-[#1b1d32] text-gray-300 transition hover:bg-[#252840] disabled:opacity-40"
+          >
+            <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true">
+              <path d="m8 4 6 6-6 6" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" />
+            </svg>
+          </button>
         </nav>
       )}
 
