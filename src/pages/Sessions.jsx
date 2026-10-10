@@ -102,10 +102,13 @@ export default function Sessions() {
   const navigate = useNavigate();
   const location = useLocation();
   const [filterOptions, setFilterOptions] = useState(null);
+  const [filtersLoading, setFiltersLoading] = useState(true);
   const [filtersError, setFiltersError] = useState('');
+  const [filtersRetry, setFiltersRetry] = useState(0);
   const [sessions, setSessions] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [sessionsError, setSessionsError] = useState('');
+  const [loadedSessionsKey, setLoadedSessionsKey] = useState('');
+  const [sessionsErrorResult, setSessionsErrorResult] = useState({ key: '', error: '' });
+  const [sessionsRetry, setSessionsRetry] = useState(0);
   const [activeSession, setActiveSession] = useState(null);
   const [seats, setSeats] = useState([]);
   const [seatSections, setSeatSections] = useState([]);
@@ -114,18 +117,26 @@ export default function Sessions() {
   const [seatErrors, setSeatErrors] = useState([]);
   const [seatLoading, setSeatLoading] = useState(false);
   const [bookingLoading, setBookingLoading] = useState(false);
+  const [releaseLoading, setReleaseLoading] = useState(false);
   const [bookingError, setBookingError] = useState('');
+  const [bookingRetryAction, setBookingRetryAction] = useState(null);
   const [bookingStep, setBookingStep] = useState('seats');
   const [hold, setHold] = useState(null);
   const [order, setOrder] = useState(null);
   const [remainingHoldSeconds, setRemainingHoldSeconds] = useState(null);
   const [payment, setPayment] = useState({ fullName: '', email: '', mobileNumber: '', cardNumber: '', expiry: '', cvv: '' });
   const [paymentErrors, setPaymentErrors] = useState({});
+  const holdLock = useRef(false);
+  const orderLock = useRef(false);
+  const releaseLock = useRef(false);
   const queryString = searchParams.toString();
   const filterParams = new URLSearchParams(searchParams);
   filterParams.delete('page');
   filterParams.delete('session');
   const filtersQueryString = filterParams.toString();
+  const sessionsRequestKey = `${filtersQueryString}:${sessionsRetry}`;
+  const loading = loadedSessionsKey !== sessionsRequestKey;
+  const sessionsError = sessionsErrorResult.key === sessionsRequestKey ? sessionsErrorResult.error : '';
   const queryStringRef = useRef(queryString);
 
   useEffect(() => {
@@ -133,10 +144,19 @@ export default function Sessions() {
   }, [queryString]);
 
   useEffect(() => {
+    let cancelled = false;
     getFilterOptions()
-      .then((response) => setFilterOptions(unwrap(response)?.filter_options || unwrap(response)))
-      .catch(() => setFiltersError('Filter options could not be loaded. Please try again later.'));
-  }, []);
+      .then((response) => {
+        if (!cancelled) setFilterOptions(unwrap(response)?.filter_options || unwrap(response));
+      })
+      .catch(() => {
+        if (!cancelled) setFiltersError('Filter options could not be loaded. Please try again.');
+      })
+      .finally(() => {
+        if (!cancelled) setFiltersLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [filtersRetry]);
 
   useEffect(() => {
     let cancelled = false;
@@ -169,27 +189,25 @@ export default function Sessions() {
             session,
           ])).values()];
           setSessions(uniqueSessions);
-          setSessionsError('');
+          setSessionsErrorResult({ key: sessionsRequestKey, error: '' });
           if (!currentParams.has('date') && meta?.date) {
             currentParams.set('date', meta.date);
             const displayPage = new URLSearchParams(queryStringRef.current).get('page');
             if (displayPage) currentParams.set('page', displayPage);
-            setLoading(true);
             setSearchParams(currentParams, { replace: true });
           }
         }
       })
       .catch((error) => {
         if (!cancelled) {
-          setSessionsError(getErrorMessage(error, 'Sessions could not be loaded. Please try again later.'));
-          setSessions([]);
+          setSessionsErrorResult({ key: sessionsRequestKey, error: getErrorMessage(error, 'Sessions could not be loaded. Please try again later.') });
         }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setLoadedSessionsKey(sessionsRequestKey);
       });
     return () => { cancelled = true; };
-  }, [filtersQueryString, setSearchParams]);
+  }, [filtersQueryString, sessionsRequestKey, setSearchParams]);
 
   const updateFilter = (key, value) => {
     const nextParams = new URLSearchParams(searchParams);
@@ -198,15 +216,11 @@ export default function Sessions() {
       value.forEach((entry) => nextParams.append(key, entry));
     } else if (value) nextParams.set(key, value);
     else nextParams.delete(key);
-    if (key !== 'page') {
-      nextParams.set('page', '1');
-      setLoading(true);
-      setSessionsError('');
-    }
+    if (key !== 'page') nextParams.set('page', '1');
     setSearchParams(nextParams);
   };
 
-  const fetchSeats = useCallback(async (session, preserveSelection = []) => {
+  const fetchSeats = useCallback(async function fetchSeatsRequest(session, preserveSelection = []) {
     setSeatLoading(true);
     setBookingError('');
     try {
@@ -218,6 +232,8 @@ export default function Sessions() {
       setSeatSections(nextSections);
       setSeats(nextSeats);
       setSeatErrors([]);
+      setBookingError('');
+      setBookingRetryAction(null);
       const retained = preserveSelection.filter((selectedId) =>
         nextSeats.some((seat) => seatId(seat) === selectedId && !isSeatUnavailable(seat))
       );
@@ -229,8 +245,11 @@ export default function Sessions() {
           seatId(seat), seat.ticketType || 'adult',
         ])),
       }));
+      return true;
     } catch (error) {
       setBookingError(getErrorMessage(error, 'Seats could not be loaded. Please try again.'));
+      setBookingRetryAction(() => () => fetchSeatsRequest(session, preserveSelection));
+      return false;
     } finally {
       setSeatLoading(false);
     }
@@ -275,6 +294,7 @@ export default function Sessions() {
   const toggleSeat = (seat) => {
     const id = seatId(seat);
     if (isSeatUnavailable(seat) || hold) return;
+    setBookingRetryAction(null);
     setSeatErrors((current) => current.filter((errorId) => errorId !== id));
     setSelectedSeats((current) => {
       if (current.includes(id)) return current.filter((selectedId) => selectedId !== id);
@@ -290,7 +310,8 @@ export default function Sessions() {
   };
 
   const holdSelectedSeats = async () => {
-    if (!activeSession || selectedSeats.length === 0 || !bookingAgeAllowed) return false;
+    if (holdLock.current || !activeSession || selectedSeats.length === 0 || !bookingAgeAllowed) return false;
+    holdLock.current = true;
     setBookingLoading(true);
     setBookingError('');
     setSeatErrors([]);
@@ -313,16 +334,15 @@ export default function Sessions() {
         const contestedKeys = new Set(contested.map((seat) => String(typeof seat === 'object' ? seat.code : seat)));
         const lostSeats = seats.filter((seat) => contestedKeys.has(String(seat.code)) || contestedKeys.has(seatId(seat)));
         const contestedIds = new Set(lostSeats.map(seatId));
-        setSeats((current) => current.map((seat) => contestedIds.has(seatId(seat))
-          ? { ...seat, state: 'sold' }
-          : seat
-        ));
         const remaining = selectedSeats.filter((id) => !contestedIds.has(id));
         setSelectedSeats(remaining);
-        await fetchSeats(activeSession, remaining);
-        setBookingError(contestedCodes.length
-          ? `Seats ${contestedCodes.join(', ')} were just taken. Your other selections remain selected.`
-          : getErrorMessage(error, 'Some seats were just taken. Your other selections remain selected.'));
+        const refreshed = await fetchSeats(activeSession, remaining);
+        setBookingError(refreshed
+          ? contestedCodes.length
+            ? `Seats ${contestedCodes.join(', ')} were just taken. Your other selections remain selected.`
+            : getErrorMessage(error, 'Some seats were just taken. Your other selections remain selected.')
+          : 'Some selected seats were taken, and the seat map could not be refreshed. Retry to reload it.');
+        setBookingRetryAction(refreshed ? () => holdSelectedSeats : () => () => fetchSeats(activeSession, remaining));
       } else {
         if (error.response?.status === 422) {
           const fieldErrors = error.response.data?.errors || {};
@@ -339,16 +359,19 @@ export default function Sessions() {
           }
         }
         setBookingError(getErrorMessage(error, 'Could not hold the selected seats. Please try again.'));
+        setBookingRetryAction(error.response?.status === 422 ? null : () => holdSelectedSeats);
       }
       return false;
     } finally {
+      holdLock.current = false;
       setBookingLoading(false);
     }
   };
 
   const confirmOrder = async (event) => {
-    event.preventDefault();
-    if (!hold?.id) return;
+    event?.preventDefault();
+    if (orderLock.current || !hold?.id) return;
+    orderLock.current = true;
     setBookingLoading(true);
     setPaymentErrors({});
     try {
@@ -362,38 +385,72 @@ export default function Sessions() {
     } catch (error) {
       const fieldErrors = error.response?.data?.errors;
       if (fieldErrors) {
-        setPaymentErrors(fieldErrors);
+        setPaymentErrors({
+          ...fieldErrors,
+          fullName: fieldErrors.fullName ?? fieldErrors.full_name,
+          mobileNumber: fieldErrors.mobileNumber ?? fieldErrors.mobile_number,
+          cardNumber: fieldErrors.cardNumber ?? fieldErrors.card_number,
+          expiry: fieldErrors.expiry ?? fieldErrors.expiration,
+          cvv: fieldErrors.cvv ?? fieldErrors.security_code,
+        });
       } else if (error.response?.status === 422 && /hold time expired/i.test(error.response.data?.message || '')) {
-        const holdId = hold.id;
         setHold(null);
         setRemainingHoldSeconds(null);
         setSelectedSeats([]);
-        await releaseHold(holdId).catch(() => {});
-        await fetchSeats(activeSession);
-        setBookingError(error.response.data.message);
+        setBookingStep('seats');
+        setBookingRetryAction(null);
+        const refreshed = await fetchSeats(activeSession);
+        if (refreshed) setBookingError(error.response.data.message);
       } else if (error.response?.status === 409) {
-        const contested = error.response.data?.contested ?? [];
+        const contested = error.response.data?.contested ?? error.response.data?.seats ?? [];
         const contestedCodes = contested.map((seat) => typeof seat === 'object' ? seat.code : seat).filter(Boolean);
+        const contestedKeys = new Set(contested.map((seat) => String(typeof seat === 'object' ? seat.code ?? seat.id ?? seat.seatId : seat)));
         const contestedIds = new Set(seats
-          .filter((seat) => contestedCodes.includes(seat.code))
+          .filter((seat) => contestedKeys.has(String(seat.code)) || contestedKeys.has(seatId(seat)))
           .map(seatId));
         const remaining = selectedSeats.filter((id) => !contestedIds.has(id));
         setHold(null);
         setSelectedSeats(remaining);
-        await fetchSeats(activeSession, remaining);
-        setBookingError(contestedCodes.length
+        setBookingStep('seats');
+        setBookingRetryAction(null);
+        const refreshed = await fetchSeats(activeSession, remaining);
+        if (refreshed) setBookingError(contestedCodes.length
           ? `Seats ${contestedCodes.join(', ')} were sold. Please review the updated seat map.`
           : getErrorMessage(error, 'Some selected seats were sold. Please review the updated seat map.'));
+        else setBookingError('Some selected seats were sold, but the seat map could not be refreshed. Retry to reload it.');
+        setBookingRetryAction(refreshed ? null : () => () => fetchSeats(activeSession, remaining));
       } else {
         setBookingError(getErrorMessage(error, 'Your order could not be completed. Please try again.'));
+        setBookingRetryAction(fieldErrors ? null : () => () => confirmOrder());
       }
     } finally {
+      orderLock.current = false;
       setBookingLoading(false);
     }
   };
 
   const closeBooking = () => {
-    if (hold?.id) releaseHold(hold.id).catch(() => {});
+    if (holdLock.current || orderLock.current || releaseLock.current) return;
+    if (hold?.id) {
+      releaseLock.current = true;
+      setBookingLoading(true);
+      setReleaseLoading(true);
+      releaseHold(hold.id)
+        .then(() => {
+          setHold(null);
+          setActiveSession(null);
+        })
+        .catch(() => {
+          setBookingError('The seat hold could not be released. Please retry before closing.');
+          setBookingRetryAction(() => closeBooking);
+        })
+        .finally(() => {
+          releaseLock.current = false;
+          setReleaseLoading(false);
+          setBookingLoading(false);
+        });
+      return;
+    }
     setActiveSession(null);
     setHold(null);
     setRemainingHoldSeconds(null);
@@ -402,16 +459,31 @@ export default function Sessions() {
     setSelectedSeats([]);
     setTicketTypes({});
     setBookingError('');
+    setBookingRetryAction(null);
     setBookingStep('seats');
   };
 
   const returnToSeatSelection = async () => {
-    if (!activeSession) return;
-    if (hold?.id) await releaseHold(hold.id).catch(() => {});
-    setHold(null);
-    setRemainingHoldSeconds(null);
-    setBookingStep('seats');
-    await fetchSeats(activeSession, selectedSeats);
+    if (!activeSession || releaseLock.current) return;
+    releaseLock.current = true;
+    setBookingLoading(true);
+    setReleaseLoading(true);
+    try {
+      if (hold?.id) {
+        await releaseHold(hold.id);
+      }
+      setHold(null);
+      setRemainingHoldSeconds(null);
+      setBookingStep('seats');
+      await fetchSeats(activeSession, selectedSeats);
+    } catch {
+      setBookingError('The seat hold could not be released. Please retry.');
+      setBookingRetryAction(() => returnToSeatSelection);
+    } finally {
+      releaseLock.current = false;
+      setReleaseLoading(false);
+      setBookingLoading(false);
+    }
   };
 
   const sessionTitle = (session) => session.movie?.title || session.movie_title || session.title || 'Cinema session';
@@ -502,7 +574,6 @@ export default function Sessions() {
       setRemainingHoldSeconds(remaining);
       if (remaining === 0 && !expired) {
         expired = true;
-        releaseHold(hold.id).catch(() => {});
         setHold(null);
         setSelectedSeats([]);
         setRemainingHoldSeconds(null);
@@ -530,6 +601,7 @@ export default function Sessions() {
             <h2 className="text-sm font-semibold">Filters</h2>
           </div>
 
+          {filtersLoading && <p role="status" className="mb-3 text-[10px] text-gray-400">Loading filters...</p>}
           {FILTERS.slice(0, 1).map(renderFilter)}
 
           <fieldset className="border-t border-white/5 py-3">
@@ -552,15 +624,20 @@ export default function Sessions() {
 
           {FILTERS.slice(1).map(renderFilter)}
 
-          {filtersError && <p role="alert" className="border-t border-white/5 pt-3 text-[11px] text-red-400">{filtersError}</p>}
+          {filtersError && <div className="border-t border-white/5 pt-3">
+            <p role="alert" className="text-[11px] text-red-400">{filtersError}</p>
+            <button type="button" onClick={() => {
+              setFiltersLoading(true);
+              setFiltersError('');
+              setFiltersRetry((attempt) => attempt + 1);
+            }} disabled={filtersLoading} className="mt-2 text-[10px] font-semibold text-white underline disabled:opacity-50">{filtersLoading ? 'Retrying...' : 'Retry filters'}</button>
+          </div>}
           <button
             type="button"
             onClick={() => {
               const retainedParams = new URLSearchParams();
               const selectedDate = searchParams.get('date');
               if (selectedDate) retainedParams.set('date', selectedDate);
-              setLoading(true);
-              setSessionsError('');
               setSearchParams(retainedParams);
             }}
             disabled={!queryString}
@@ -591,8 +668,16 @@ export default function Sessions() {
             </label>
           </div>
 
-          {sessionsError && <p role="alert" className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-300">{sessionsError}</p>}
-          {loading ? <p className="py-12 text-center text-sm text-gray-400">Loading sessions...</p> : groupedSessions.size ? (
+          {sessionsError && <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-300">
+            <p role="alert">{sessionsError}</p>
+            <button type="button" onClick={() => setSessionsRetry((attempt) => attempt + 1)} disabled={loading} className="mt-2 font-semibold underline disabled:opacity-50">{loading ? 'Retrying...' : 'Retry sessions'}</button>
+          </div>}
+          {loading ? <div role="status" aria-label="Loading sessions" className="space-y-4">
+            {Array.from({ length: 4 }, (_, index) => <div key={index} className="animate-pulse border-b border-white/10 py-4">
+              <div className="mb-3 flex items-center gap-2"><div className="h-10 w-7 rounded bg-[#1a2030]" /><div className="space-y-2"><div className="h-3 w-36 rounded bg-[#25283a]" /><div className="h-2 w-24 rounded bg-[#1c2032]" /></div></div>
+              <div className="flex gap-2 overflow-hidden">{Array.from({ length: 3 }, (_, cardIndex) => <div key={cardIndex} className="h-16 w-[132px] shrink-0 rounded-lg bg-[#1b1d32]" />)}</div>
+            </div>)}
+          </div> : groupedSessions.size ? (
             <div className="divide-y divide-white/10">
               {visibleMovieGroups.map(([movieKey, movieSessions]) => {
                 const firstSession = movieSessions[0];
@@ -663,7 +748,16 @@ export default function Sessions() {
                 );
               })}
             </div>
-          ) : !sessionsError ? <p className="py-12 text-center text-sm text-gray-400">No sessions found</p> : null}
+          ) : !sessionsError ? <div className="rounded-lg border border-white/5 bg-[#151827] px-4 py-12 text-center">
+            <p className="text-sm font-semibold text-white">No sessions match these filters.</p>
+            <p className="mt-1 text-xs text-gray-400">Try another date or clear your selected filters.</p>
+            <button type="button" onClick={() => {
+              const retainedParams = new URLSearchParams();
+              const selectedDate = searchParams.get('date');
+              if (selectedDate) retainedParams.set('date', selectedDate);
+              setSearchParams(retainedParams);
+            }} className="mt-4 rounded-full bg-[#25283a] px-4 py-2 text-xs font-semibold text-white hover:bg-[#33374b]">Clear filters</button>
+          </div> : null}
         </section>
       </div>
 
@@ -717,7 +811,9 @@ export default function Sessions() {
           seatErrors={seatErrors}
           seatLoading={seatLoading}
           bookingLoading={bookingLoading}
+          releaseLoading={releaseLoading}
           bookingError={bookingError}
+          bookingRetryAction={bookingRetryAction}
           hold={hold}
           order={order}
           remainingHoldSeconds={remainingHoldSeconds}
@@ -729,15 +825,26 @@ export default function Sessions() {
           ageMessage={ageMessage}
           step={bookingStep}
           onClose={closeBooking}
-          onToggleSeat={toggleSeat}
-          onTicketTypeChange={(id, type) => setTicketTypes((current) => ({ ...current, [id]: type }))}
-          onPaymentChange={(key, value) => setPayment((current) => ({ ...current, [key]: value }))}
+          onToggleSeat={(seat) => { if (!bookingLoading) toggleSeat(seat); }}
+          onTicketTypeChange={(id, type) => {
+            if (bookingLoading) return;
+            setBookingError('');
+            setBookingRetryAction(null);
+            setTicketTypes((current) => ({ ...current, [id]: type }));
+          }}
+          onPaymentChange={(key, value) => {
+            setPayment((current) => ({ ...current, [key]: value }));
+            setPaymentErrors((current) => ({ ...current, [key]: undefined }));
+            setBookingError('');
+            setBookingRetryAction(null);
+          }}
           onHoldSeats={holdSelectedSeats}
           onConfirmOrder={confirmOrder}
+          onRetryBooking={() => bookingRetryAction?.()}
           onBackToSeats={returnToSeatSelection}
           onViewTickets={() => {
             closeBooking();
-            navigate('/profile');
+            navigate('/profile?tab=tickets');
           }}
         />
       )}

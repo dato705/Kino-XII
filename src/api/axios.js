@@ -10,7 +10,8 @@ let pendingRequests = [];
 
 // ატანოს ტოკენი თითოეულ მოთხოვნას
 API.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token');
+  const token = config._authToken || localStorage.getItem('token');
+  delete config._authToken;
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   } else {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { getFilterOptions, getMyTickets, refundOrder } from '../api/cinema';
 import { useAuth } from '../context/AuthContext';
 
@@ -100,19 +100,23 @@ function ProfilePage({ user, activeTab, setActiveTab, updateProfile }) {
   const [dateOfBirth, setDateOfBirth] = useState(user.dateOfBirth || user.date_of_birth || '');
   const [preferredVenueId, setPreferredVenueId] = useState(String(user.preferredVenueId ?? user.preferred_venue_id ?? user.preferredVenue?.id ?? ''));
   const [venues, setVenues] = useState([]);
+  const [venuesLoading, setVenuesLoading] = useState(true);
+  const [venuesRetry, setVenuesRetry] = useState(0);
   const [venueLoadError, setVenueLoadError] = useState('');
   const [serverErrors, setServerErrors] = useState({});
   const [touched, setTouched] = useState({});
   const [profileError, setProfileError] = useState('');
   const [saving, setSaving] = useState(false);
+  const profileSaveLock = useRef(false);
   const [ticketTab, setTicketTab] = useState('upcoming');
   const [ticketOrders, setTicketOrders] = useState([]);
-  const [recentlyRefunded, setRecentlyRefunded] = useState([]);
   const [upcomingCount, setUpcomingCount] = useState(0);
   const [loadedTicketKey, setLoadedTicketKey] = useState('');
   const [ticketsError, setTicketsError] = useState('');
   const [ticketMessage, setTicketMessage] = useState('');
   const [refunding, setRefunding] = useState('');
+  const [refundErrors, setRefundErrors] = useState({});
+  const refundLocks = useRef(new Set());
   const [ticketRequestId, setTicketRequestId] = useState(0);
   const ticketKey = `${ticketTab}:${ticketRequestId}`;
   const ticketsLoading = loadedTicketKey !== ticketKey;
@@ -125,10 +129,13 @@ function ProfilePage({ user, activeTab, setActiveTab, updateProfile }) {
         if (!cancelled) setVenues(options?.venues || []);
       })
       .catch(() => {
-        if (!cancelled) setVenueLoadError('Preferred venues could not be loaded.');
+        if (!cancelled) setVenueLoadError('Preferred venues could not be loaded. Please retry.');
+      })
+      .finally(() => {
+        if (!cancelled) setVenuesLoading(false);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [venuesRetry]);
 
   useEffect(() => {
     let cancelled = false;
@@ -137,10 +144,7 @@ function ProfilePage({ user, activeTab, setActiveTab, updateProfile }) {
         if (cancelled) return;
         const orders = getOrderList(response);
         if (ticketTab === 'upcoming') setUpcomingCount(orders.length);
-        const visibleOrders = ticketTab === 'past'
-          ? [...recentlyRefunded, ...orders].filter((order, index, all) => all.findIndex((candidate) => getOrderKey(candidate) === getOrderKey(order)) === index)
-          : orders;
-        setTicketOrders(visibleOrders);
+        setTicketOrders(orders);
         setTicketsError('');
         setLoadedTicketKey(ticketKey);
       })
@@ -152,7 +156,7 @@ function ProfilePage({ user, activeTab, setActiveTab, updateProfile }) {
         }
       });
     return () => { cancelled = true; };
-  }, [ticketTab, ticketRequestId, recentlyRefunded, ticketKey]);
+  }, [ticketTab, ticketRequestId, ticketKey]);
 
   const currentAge = Number(user.age ?? calculateAge(dateOfBirth));
   const fullNameError = !fullName.trim()
@@ -201,47 +205,57 @@ function ProfilePage({ user, activeTab, setActiveTab, updateProfile }) {
   };
 
   const handleProfileSubmit = async (event) => {
-    event.preventDefault();
+    event?.preventDefault();
+    if (profileSaveLock.current) return;
     setTouched({ fullName: true, mobileNumber: true, dateOfBirth: true });
     setServerErrors({});
     setProfileError('');
-    if (!formIsValid || !hasChanges) return;
+    if (!formIsValid || (!hasChanges && !profileError)) return;
 
     const profile = new FormData();
     profile.append('fullName', fullName.trim());
     profile.append('mobileNumber', mobileDigits);
     profile.append('dateOfBirth', dateOfBirth);
     profile.append('preferredVenueId', preferredVenueId);
+    profileSaveLock.current = true;
     setSaving(true);
     try {
       await updateProfile(profile);
       if (location.state?.from) navigate(location.state.from, { replace: true });
     } catch (requestError) {
       const errors = requestError.response?.data?.errors;
-      if (errors) setServerErrors(errors);
+      if (errors) setServerErrors({
+        ...errors,
+        fullName: errors.fullName ?? errors.full_name,
+        mobileNumber: errors.mobileNumber ?? errors.mobile_number,
+        dateOfBirth: errors.dateOfBirth ?? errors.date_of_birth,
+      });
       else setProfileError(requestError.response?.data?.message || 'Your profile could not be saved. Please try again.');
     } finally {
+      profileSaveLock.current = false;
       setSaving(false);
     }
   };
 
   const handleRefund = async (order) => {
     const reference = getOrderReference(order);
-    if (!reference || !order.isRefundable || !window.confirm(`Refund order ${reference}? This action cannot be undone.`)) return;
+    const lockKey = String(reference);
+    if (!reference || !order.isRefundable || refundLocks.current.has(lockKey) || !window.confirm(`Refund order ${reference}? This action cannot be undone.`)) return;
+    refundLocks.current.add(lockKey);
     setRefunding(String(reference));
-    setTicketMessage('');
-    setTicketsError('');
+    setRefundErrors((current) => ({ ...current, [lockKey]: '' }));
     try {
       const response = await refundOrder(reference);
       const updatedOrder = unwrap(response)?.order || unwrap(response);
-      setRecentlyRefunded((current) => [updatedOrder, ...current.filter((item) => getOrderKey(item) !== getOrderKey(updatedOrder))]);
-      setTicketOrders((current) => current.filter((item) => getOrderKey(item) !== getOrderKey(updatedOrder)));
-      setUpcomingCount((count) => Math.max(0, count - 1));
       setTicketMessage(`Order ${getOrderReference(updatedOrder)} was refunded.`);
-      if (ticketTab === 'past') setTicketRequestId((value) => value + 1);
+      setTicketRequestId((value) => value + 1);
     } catch (requestError) {
-      setTicketsError(requestError.response?.data?.message || 'The refund could not be completed. Please try again.');
+      setRefundErrors((current) => ({
+        ...current,
+        [lockKey]: requestError.response?.data?.message || 'The refund could not be completed. Please retry.',
+      }));
     } finally {
+      refundLocks.current.delete(lockKey);
       setRefunding('');
     }
   };
@@ -270,7 +284,10 @@ function ProfilePage({ user, activeTab, setActiveTab, updateProfile }) {
           <div className="w-full" style={{ maxWidth: 920 }}>
             {!profileComplete && <p className="mb-5 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-[11px] text-amber-300">Please complete your profile to enable booking.</p>}
             {profileComplete && displayedAge !== null && displayedAge < 18 && <p className="mb-5 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-[11px] text-amber-300">{eligibilityMessage}</p>}
-            {profileError && <p role="alert" className="mb-4 rounded-lg bg-red-500/10 p-3 text-[10px] text-red-300">{profileError}</p>}
+            {profileError && <div className="mb-4 rounded-lg bg-red-500/10 p-3 text-[10px] text-red-300">
+              <p role="alert">{profileError}</p>
+              <button type="button" onClick={() => handleProfileSubmit()} disabled={saving} className="mt-2 font-semibold underline disabled:opacity-50">{saving ? 'Retrying...' : 'Retry save'}</button>
+            </div>}
 
             <form onSubmit={handleProfileSubmit} className="space-y-5">
               <label className="block space-y-2 text-xs font-medium">
@@ -329,11 +346,16 @@ function ProfilePage({ user, activeTab, setActiveTab, updateProfile }) {
 
               <label className="block space-y-2 text-xs font-medium">
                 <span>Preferred Venue (Optional)</span>
-                <select value={preferredVenueId} onChange={(event) => setPreferredVenueId(event.target.value)} style={profileInputStyle} className="h-[42px] w-full rounded-[10px] border border-transparent bg-[#1c1e30] px-4 text-xs text-white outline-none focus:border-gray-600">
+                <select value={preferredVenueId} onChange={(event) => setPreferredVenueId(event.target.value)} disabled={venuesLoading} style={profileInputStyle} className="h-[42px] w-full rounded-[10px] border border-transparent bg-[#1c1e30] px-4 text-xs text-white outline-none focus:border-gray-600 disabled:opacity-60">
                   <option value="">No preferred venue</option>
                   {venues.map((venue) => <option key={venue.id} value={venue.id}>{venue.name} · {venue.city}</option>)}
                 </select>
-                {venueLoadError && <span className="block text-[9px] text-gray-500">{venueLoadError}</span>}
+                {venuesLoading && <span role="status" className="block text-[9px] text-gray-400">Loading venues...</span>}
+                {venueLoadError && <span className="block text-[9px] text-red-400">{venueLoadError} <button type="button" onClick={() => {
+                  setVenuesLoading(true);
+                  setVenueLoadError('');
+                  setVenuesRetry((attempt) => attempt + 1);
+                }} className="font-semibold underline">Retry</button></span>}
               </label>
 
               <button type="submit" disabled={!hasChanges || !formIsValid || saving} style={{ height: 42, minWidth: 150 }} className="mt-2 h-[42px] rounded-full bg-[#f12d13] px-6 text-xs font-bold text-white transition hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-45">
@@ -349,8 +371,15 @@ function ProfilePage({ user, activeTab, setActiveTab, updateProfile }) {
             <button type="button" aria-pressed={ticketTab === 'past'} onClick={() => { setTicketTab('past'); setTicketMessage(''); }} className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 ${ticketTab === 'past' ? 'bg-[#292c3e] text-white' : 'text-gray-400 hover:text-white'}`}>Past</button>
           </div>
           {ticketMessage && <p role="status" className="mb-3 rounded-lg bg-emerald-500/10 p-3 text-[10px] text-emerald-300">{ticketMessage}</p>}
-          {ticketsError && <p role="alert" className="mb-3 rounded-lg bg-red-500/10 p-3 text-[10px] text-red-300">{ticketsError}</p>}
-          {ticketsLoading ? <p className="py-12 text-center text-xs text-gray-400">Loading tickets...</p> : ticketOrders.length ? (
+          {ticketsError && <div className="mb-3 rounded-lg bg-red-500/10 p-3 text-[10px] text-red-300">
+            <p role="alert">{ticketsError}</p>
+            <button type="button" onClick={() => setTicketRequestId((value) => value + 1)} disabled={ticketsLoading} className="mt-2 font-semibold underline disabled:opacity-50">{ticketsLoading ? 'Retrying...' : 'Retry tickets'}</button>
+          </div>}
+          {ticketsLoading ? <div role="status" aria-label="Loading tickets" className="space-y-3 pt-5">
+            {Array.from({ length: 2 }, (_, index) => <div key={index} className="animate-pulse rounded-xl bg-[#1c1e30] p-4">
+              <div className="flex gap-4"><div className="h-20 w-14 rounded bg-[#292c3e]" /><div className="flex-1 space-y-3"><div className="h-3 w-40 rounded bg-[#303448]" /><div className="h-3 w-full rounded bg-[#292c3e]" /><div className="h-3 w-2/3 rounded bg-[#292c3e]" /></div></div>
+            </div>)}
+          </div> : ticketOrders.length ? (
             <div className="space-y-3">
               {ticketOrders.map((order) => {
                 const session = order.session || {};
@@ -387,6 +416,10 @@ function ProfilePage({ user, activeTab, setActiveTab, updateProfile }) {
                       <p className="text-[9px] text-gray-400">Total paid <strong className="ml-1 text-sm text-white">₾{order.totalPrice ?? order.total ?? 0}</strong></p>
                       {ticketTab === 'upcoming' && <div>
                         <button type="button" onClick={() => handleRefund(order)} disabled={!order.isRefundable || refunding === String(getOrderReference(order))} title={refundDisabled ? 'Refunds are unavailable within 2 hours of the session.' : 'Refund order'} className="w-full rounded-full bg-[#292c3e] px-4 py-2 text-[9px] font-bold text-gray-200 transition hover:bg-[#35394d] disabled:cursor-not-allowed disabled:opacity-45">{refunding === String(getOrderReference(order)) ? 'Refunding...' : 'Refund'}</button>
+                        {refundErrors[String(getOrderReference(order))] && <div className="mt-2 text-[9px] text-red-300">
+                          <p role="alert">{refundErrors[String(getOrderReference(order))]}</p>
+                          <button type="button" onClick={() => handleRefund(order)} disabled={refunding === String(getOrderReference(order))} className="mt-1 font-semibold underline disabled:opacity-50">Retry refund</button>
+                        </div>}
                         {refundDisabled && <p className="mt-1 text-center text-[8px] text-gray-500">Refund unavailable within 2 hours</p>}
                       </div>}
                     </div>
@@ -394,7 +427,11 @@ function ProfilePage({ user, activeTab, setActiveTab, updateProfile }) {
                 );
               })}
             </div>
-          ) : !ticketsError ? <p className="py-16 text-center text-xs text-gray-400">No {ticketTab} tickets.</p> : null}
+          ) : !ticketsError ? <div className="py-16 text-center">
+            <p className="text-sm font-semibold text-white">No {ticketTab} tickets.</p>
+            <p className="mt-1 text-xs text-gray-400">{ticketTab === 'upcoming' ? 'Book a session to see your tickets here.' : 'Completed sessions will appear here.'}</p>
+            {ticketTab === 'upcoming' && <Link to="/sessions" className="mt-4 inline-block rounded-full bg-[#f12d13] px-4 py-2 text-xs font-semibold text-white hover:bg-red-600">Browse sessions</Link>}
+          </div> : null}
         </section>
       )}
     </section>

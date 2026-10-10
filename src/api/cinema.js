@@ -10,7 +10,7 @@ export const getProfileApi = () => API.get('/me');
 export const updateProfileApi = (profile) => API.put('/profile', profile);
 export const getMyTickets = (filter) => API.get('/tickets', { params: filter ? { filter } : {} });
 export const refundOrder = (orderReference) => API.post(`/orders/${encodeURIComponent(orderReference)}/refund`);
-export const logoutApi = () => API.post('/logout');
+export const logoutApi = (token) => API.post('/logout', null, token ? { _authToken: token } : undefined);
 
 export const getFeaturedMovies = () => API.get('/movies/featured');
 export const getNowPlayingMovies = () => API.get('/movies/now-playing');

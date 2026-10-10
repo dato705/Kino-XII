@@ -1,6 +1,5 @@
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useContext, useState, useEffect, useRef } from 'react';
 import {
-  getFilterOptions,
   getProfileApi,
   loginApi,
   logoutApi,
@@ -22,6 +21,13 @@ export function AuthProvider({ children }) {
   });
 
   const [token, setToken] = useState(() => localStorage.getItem('token') || null);
+  const [profileSyncError, setProfileSyncError] = useState('');
+  const [profileSyncLoading, setProfileSyncLoading] = useState(Boolean(localStorage.getItem('token')));
+  const [profileSyncRetry, setProfileSyncRetry] = useState(0);
+  const [logoutError, setLogoutError] = useState('');
+  const [logoutLoading, setLogoutLoading] = useState(false);
+  const [logoutRetryToken, setLogoutRetryToken] = useState('');
+  const logoutLock = useRef(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState(null);
@@ -31,21 +37,34 @@ export function AuthProvider({ children }) {
     setupAxiosInterceptors((_error) => {
       setUser(null);
       setToken(null);
-      if (!_error.config?.url?.endsWith('/me')) setIsAuthOpen(true);
+      setIsAuthOpen(true);
     });
-    getFilterOptions().catch(() => {});
-    if (token) {
-      getProfileApi()
+    if (!token) {
+      return () => { cancelled = true; };
+    }
+    getProfileApi()
         .then((response) => {
           if (cancelled || localStorage.getItem('token') !== token) return;
           const profile = response.data?.data?.user || response.data?.data || response.data?.user || response.data;
+          setProfileSyncError('');
           setUser(profile);
           localStorage.setItem('user', JSON.stringify(profile));
         })
-        .catch(() => {});
-    }
+        .catch((error) => {
+          if (cancelled || error.response?.status === 401) return;
+          setProfileSyncError(error.response?.data?.message || 'Your profile could not be refreshed. Please retry.');
+        })
+        .finally(() => {
+          if (!cancelled) setProfileSyncLoading(false);
+        });
     return () => { cancelled = true; };
-  }, [token]);
+  }, [token, profileSyncRetry]);
+
+  const retryProfileSync = () => {
+    setProfileSyncLoading(true);
+    setProfileSyncError('');
+    setProfileSyncRetry((attempt) => attempt + 1);
+  };
 
   const openAuthModal = (action = null) => {
     if (typeof action === 'function') {
@@ -77,6 +96,10 @@ export function AuthProvider({ children }) {
   const handleLoginSuccess = (userData, tokenData, replayPendingAction = true) => {
     setUser(userData);
     setToken(tokenData);
+    setProfileSyncLoading(true);
+    setProfileSyncError('');
+    setLogoutError('');
+    setLogoutRetryToken('');
     localStorage.setItem('user', JSON.stringify(userData));
     localStorage.setItem('token', tokenData);
     setIsAuthOpen(false);
@@ -115,8 +138,25 @@ export function AuthProvider({ children }) {
     return payload;
   };
 
+  const requestLogout = async (sessionToken) => {
+    try {
+      await logoutApi(sessionToken);
+      setLogoutError('');
+      setLogoutRetryToken('');
+    } catch (error) {
+      if (error.response?.status !== 401) {
+        setLogoutError('You are signed out here, but the server session could not be closed. Please retry.');
+        setLogoutRetryToken(sessionToken);
+      }
+    }
+  };
+
   const logout = async () => {
-    const logoutRequest = logoutApi().catch(() => {});
+    if (logoutLock.current) return;
+    logoutLock.current = true;
+    const sessionToken = token || localStorage.getItem('token');
+    setLogoutLoading(true);
+    setLogoutError('');
     setUser(null);
     setToken(null);
     localStorage.removeItem('user');
@@ -125,8 +165,22 @@ export function AuthProvider({ children }) {
     setIsRegisterOpen(false);
     setPendingAction(null);
     try {
-      await logoutRequest;
-    } catch {
+      if (sessionToken) await requestLogout(sessionToken);
+    } finally {
+      logoutLock.current = false;
+      setLogoutLoading(false);
+    }
+  };
+
+  const retryLogout = async () => {
+    if (logoutLock.current || !logoutRetryToken) return;
+    logoutLock.current = true;
+    setLogoutLoading(true);
+    try {
+      await requestLogout(logoutRetryToken);
+    } finally {
+      logoutLock.current = false;
+      setLogoutLoading(false);
     }
   };
 
@@ -134,6 +188,10 @@ export function AuthProvider({ children }) {
     <AuthContext.Provider value={{
       user,
       token,
+      profileSyncError,
+      profileSyncLoading,
+      logoutError,
+      logoutLoading,
       isAuthOpen,
       isRegisterOpen,
       openAuthModal,
@@ -143,6 +201,8 @@ export function AuthProvider({ children }) {
       login,
       register,
       updateProfile,
+      retryProfileSync,
+      retryLogout,
       logout
     }}>
       {children}

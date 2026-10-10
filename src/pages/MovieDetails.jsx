@@ -49,12 +49,14 @@ export default function MovieDetails() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { user, token } = useAuth();
   const [movieResult, setMovieResult] = useState({ slug: '', movie: null, error: '' });
+  const [movieRetry, setMovieRetry] = useState(0);
   const movieLoading = movieResult.slug !== slug;
   const movie = movieLoading ? null : movieResult.movie;
   const movieError = movieLoading ? '' : movieResult.error;
   const selectedDate = searchParams.get('date') || SESSION_DATES[0].value;
   const showtimesKey = `${slug}:${selectedDate}`;
   const [showtimesResult, setShowtimesResult] = useState({ key: '', sessions: [], error: '' });
+  const [showtimesRetry, setShowtimesRetry] = useState(0);
   const sessionsLoading = Boolean(movie && showtimesResult.key !== showtimesKey);
   const sessions = showtimesResult.key === showtimesKey ? showtimesResult.sessions : EMPTY_SESSIONS;
   const sessionsError = showtimesResult.key === showtimesKey ? showtimesResult.error : '';
@@ -77,7 +79,7 @@ export default function MovieDetails() {
         if (!cancelled) setMovieResult({ slug, movie: null, error: 'Movie details could not be loaded. Please try again later.' });
       });
     return () => { cancelled = true; };
-  }, [slug]);
+  }, [slug, movieRetry]);
 
   useEffect(() => {
     if (!movie?.title) return undefined;
@@ -113,7 +115,7 @@ export default function MovieDetails() {
         }
       });
     return () => { cancelled = true; };
-  }, [movie, selectedDate, showtimesKey]);
+  }, [movie, selectedDate, showtimesKey, showtimesRetry]);
 
   const ageRating = movie?.ageRating || movie?.age_rating || {};
   const minimumAge = Number(ageRating.minAge ?? ageRating.min_age ?? 0);
@@ -149,11 +151,19 @@ export default function MovieDetails() {
     navigate(`/sessions?${params.toString()}`);
   };
 
-  if (movieLoading) return <p className="py-20 text-center text-sm text-gray-400">Loading movie details...</p>;
+  if (movieLoading) return <section role="status" aria-label="Loading movie details" className="animate-pulse space-y-5 py-8">
+    <div className="h-72 rounded-lg bg-[#171b2a]" />
+    <div className="h-5 w-40 rounded bg-[#25283a]" />
+    <div className="h-24 rounded-lg bg-[#171b2a]" />
+  </section>;
   if (movieError || !movie) {
     return (
       <section className="mx-auto max-w-3xl py-20 text-center">
         <p role="alert" className="text-sm text-red-300">{movieError || 'Movie not found.'}</p>
+        {movieError && <button type="button" onClick={() => {
+          setMovieResult({ slug: '', movie: null, error: '' });
+          setMovieRetry((attempt) => attempt + 1);
+        }} disabled={movieLoading} className="mt-4 rounded-full bg-[#f12d13] px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">Retry</button>}
         <Link to="/" className="mt-5 inline-block text-sm font-semibold text-gray-300 hover:text-white">Back to movies</Link>
       </section>
     );
@@ -204,8 +214,19 @@ export default function MovieDetails() {
           </div>
 
           {ageRestricted && <p role="alert" className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-xs text-amber-300">{ageMessage}</p>}
-          {sessionsError && <p role="alert" className="mt-4 text-xs text-red-300">{sessionsError}</p>}
-          {sessionsLoading ? <p className="py-10 text-center text-xs text-gray-400">Loading showtimes...</p> : groupedSessions.length ? (
+          {sessionsError && <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-300">
+            <p role="alert">{sessionsError}</p>
+            <button type="button" onClick={() => {
+              setShowtimesResult({ key: '', sessions: [], error: '' });
+              setShowtimesRetry((attempt) => attempt + 1);
+            }} disabled={sessionsLoading} className="mt-2 font-semibold underline disabled:opacity-50">{sessionsLoading ? 'Retrying...' : 'Retry showtimes'}</button>
+          </div>}
+          {sessionsLoading ? <div role="status" aria-label="Loading showtimes" className="mt-5 space-y-3">
+            {Array.from({ length: 3 }, (_, index) => <div key={index} className="animate-pulse rounded-lg bg-[#1b1d30] p-4">
+              <div className="mb-3 h-3 w-28 rounded bg-[#303448]" />
+              <div className="flex gap-2"><div className="h-20 w-36 rounded-lg bg-[#25283a]" /><div className="h-20 w-36 rounded-lg bg-[#25283a]" /></div>
+            </div>)}
+          </div> : groupedSessions.length ? (
             <div className="mt-5 space-y-5">
               {groupedSessions.map((venue) => (
                 <section key={venue.name}>
@@ -253,7 +274,11 @@ export default function MovieDetails() {
                 </section>
               ))}
             </div>
-          ) : !sessionsError ? <p className="py-10 text-center text-xs text-gray-400">No sessions available for {getDateLabel(selectedDate)}.</p> : null}
+          ) : !sessionsError ? <div className="mt-5 rounded-lg border border-white/5 bg-[#151827] px-4 py-10 text-center">
+            <p className="text-sm font-semibold text-white">No sessions available for {getDateLabel(selectedDate)}.</p>
+            <p className="mt-1 text-xs text-gray-400">Choose another date or browse all sessions.</p>
+            <Link to="/sessions" className="mt-4 inline-block rounded-full bg-[#25283a] px-4 py-2 text-xs font-semibold text-white hover:bg-[#33374b]">Browse all sessions</Link>
+          </div> : null}
         </section>
 
         <aside className="border-t border-gray-800 pt-5 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0">

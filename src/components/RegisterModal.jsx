@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+
+const getErrorText = (value) => Array.isArray(value) ? value[0] : value;
 
 export default function RegisterModal() {
   const { isRegisterOpen, closeModals, openAuthModal, register } = useAuth();
@@ -15,10 +17,31 @@ export default function RegisterModal() {
   const [avatarPreview, setAvatarPreview] = useState(null);
 
   const [errors, setErrors] = useState({});
+  const [touched, setTouched] = useState({});
   const [generalError, setGeneralError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const submitLock = useRef(false);
   const isEmailValid = /\S+@\S+\.\S+/.test(email);
   const isFormValid = username.trim().length >= 3 && isEmailValid && password.length >= 3 && password === confirmPassword;
+  const usernameError = getErrorText(errors.username) || (touched.username && username.trim().length < 3 ? 'Username must be at least 3 characters long.' : '');
+  const emailError = getErrorText(errors.email) || (touched.email && !isEmailValid ? 'Please enter a valid email address.' : '');
+  const passwordError = getErrorText(errors.password) || (touched.password && password.length < 3 ? 'Password must be at least 3 characters long.' : '');
+  const confirmPasswordError = getErrorText(errors.confirmPassword) || (touched.confirmPassword && (!confirmPassword || password !== confirmPassword)
+    ? confirmPassword ? 'Passwords do not match.' : 'Please confirm your password.'
+    : '');
+  const usernameValid = touched.username && username.trim().length >= 3 && !errors.username;
+  const emailValid = touched.email && isEmailValid && !errors.email;
+  const passwordValid = touched.password && password.length >= 3 && !errors.password;
+  const confirmPasswordValid = touched.confirmPassword && Boolean(confirmPassword) && password === confirmPassword && !errors.confirmPassword;
+
+  useEffect(() => {
+    if (!isRegisterOpen) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') closeModals();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isRegisterOpen, closeModals]);
 
   if (!isRegisterOpen) return null;
 
@@ -46,7 +69,9 @@ export default function RegisterModal() {
   };
 
   const handleSubmit = async (e) => {
-    e.preventDefault();
+    e?.preventDefault();
+    if (submitLock.current) return;
+    setTouched({ username: true, email: true, password: true, confirmPassword: true });
     setErrors({});
     setGeneralError('');
 
@@ -62,6 +87,7 @@ export default function RegisterModal() {
     }
 
     try {
+      submitLock.current = true;
       setSubmitting(true);
       const formData = new FormData();
       formData.append('username', username.trim());
@@ -76,13 +102,17 @@ export default function RegisterModal() {
       const serverErrors = err.response?.data?.errors;
       if (serverErrors) {
         setErrors({
-          ...serverErrors,
-          confirmPassword: serverErrors.password_confirmation,
+          username: serverErrors.username,
+          email: serverErrors.email,
+          password: serverErrors.password,
+          confirmPassword: serverErrors.confirmPassword ?? serverErrors.password_confirmation,
+          avatar: serverErrors.avatar,
         });
       } else {
         setGeneralError(err.response?.data?.message || 'Unable to create your account. Please try again.');
       }
     } finally {
+      submitLock.current = false;
       setSubmitting(false);
     }
   };
@@ -118,6 +148,7 @@ export default function RegisterModal() {
         {generalError && (
           <div role="alert" className="mt-4 rounded-xl border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-300">
             {generalError}
+            <button type="button" onClick={() => handleSubmit()} disabled={submitting} className="mt-2 block font-semibold underline disabled:opacity-50">{submitting ? 'Retrying...' : 'Retry sign up'}</button>
           </div>
         )}
 
@@ -148,13 +179,15 @@ export default function RegisterModal() {
               id="register-username"
               type="text"
               value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              onBlur={() => setTouched((current) => ({ ...current, username: true }))}
+              onChange={(e) => { setUsername(e.target.value); setErrors((current) => ({ ...current, username: undefined })); }}
               placeholder="User"
               autoComplete="username"
-              aria-invalid={Boolean(errors.username)}
-              className={`h-[46px] w-full rounded-[14px] border bg-[#1d1e2d] px-[18px] text-[13px] font-medium text-white outline-none transition placeholder:text-[#b4b4bc] ${errors.username ? 'border-[#ff321b]' : 'border-transparent focus:border-white/30'}`}
+              aria-invalid={Boolean(usernameError)}
+              aria-describedby={usernameError ? 'register-username-error' : undefined}
+              className={`h-[46px] w-full rounded-[14px] border bg-[#1d1e2d] px-[18px] text-[13px] font-medium text-white outline-none transition placeholder:text-[#b4b4bc] ${usernameError ? 'border-[#ff321b]' : usernameValid ? 'border-emerald-500' : 'border-transparent focus:border-white/30'}`}
             />
-            {errors.username && <p className="mt-1 text-[11px] text-red-400">{Array.isArray(errors.username) ? errors.username[0] : errors.username}</p>}
+            {usernameError && <p id="register-username-error" className="mt-1 text-[11px] text-red-400">{usernameError}</p>}
           </div>
 
           <div className="mt-[28px]">
@@ -163,13 +196,16 @@ export default function RegisterModal() {
               id="register-email"
               type="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onBlur={() => setTouched((current) => ({ ...current, email: true }))}
+              onChange={(e) => { setEmail(e.target.value); setErrors((current) => ({ ...current, email: undefined })); }}
               placeholder="example@gmail.com"
               autoComplete="email"
-              aria-invalid={Boolean(errors.email)}
-              className={`h-[46px] w-full rounded-[14px] border bg-[#1d1e2d] px-[18px] text-[13px] font-medium text-white outline-none transition placeholder:text-[#b4b4bc] ${errors.email ? 'border-[#ff321b]' : 'border-transparent focus:border-white/30'}`}
+              aria-invalid={Boolean(emailError)}
+              aria-describedby={emailError ? 'register-email-error' : undefined}
+              className={`h-[46px] w-full rounded-[14px] border bg-[#1d1e2d] px-[18px] text-[13px] font-medium text-white outline-none transition placeholder:text-[#b4b4bc] ${emailError ? 'border-[#ff321b]' : emailValid ? 'border-emerald-500' : 'border-transparent focus:border-white/30'}`}
             />
-            {errors.email && <p className="mt-1 text-[11px] text-red-400">{Array.isArray(errors.email) ? errors.email[0] : errors.email}</p>}
+            {emailValid && <span className="mt-1 block text-[10px] font-medium text-emerald-400">Email looks good</span>}
+            {emailError && <p id="register-email-error" className="mt-1 text-[11px] text-red-400">{emailError}</p>}
           </div>
 
           <div className="mt-[28px] grid grid-cols-1 gap-[14px] sm:grid-cols-2">
@@ -179,13 +215,16 @@ export default function RegisterModal() {
                 id="register-password"
                 type="password"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onBlur={() => setTouched((current) => ({ ...current, password: true }))}
+                onChange={(e) => { setPassword(e.target.value); setErrors((current) => ({ ...current, password: undefined })); }}
                 placeholder="••••••••"
                 autoComplete="new-password"
-                aria-invalid={Boolean(errors.password)}
-                className={`h-[46px] w-full rounded-[14px] border bg-[#1d1e2d] px-[18px] text-[13px] font-medium text-white outline-none transition placeholder:text-[#b4b4bc] ${errors.password ? 'border-[#ff321b]' : 'border-transparent focus:border-white/30'}`}
+                aria-invalid={Boolean(passwordError)}
+                aria-describedby={passwordError ? 'register-password-error' : undefined}
+                className={`h-[46px] w-full rounded-[14px] border bg-[#1d1e2d] px-[18px] text-[13px] font-medium text-white outline-none transition placeholder:text-[#b4b4bc] ${passwordError ? 'border-[#ff321b]' : passwordValid ? 'border-emerald-500' : 'border-transparent focus:border-white/30'}`}
               />
-              {errors.password && <p className="mt-1 text-[11px] text-red-400">{Array.isArray(errors.password) ? errors.password[0] : errors.password}</p>}
+              {passwordValid && <span className="mt-1 block text-[10px] font-medium text-emerald-400">Password looks good</span>}
+              {passwordError && <p id="register-password-error" className="mt-1 text-[11px] text-red-400">{passwordError}</p>}
             </div>
 
             <div>
@@ -194,30 +233,35 @@ export default function RegisterModal() {
                 id="register-confirm-password"
                 type="password"
                 value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
+                onBlur={() => setTouched((current) => ({ ...current, confirmPassword: true }))}
+                onChange={(e) => { setConfirmPassword(e.target.value); setErrors((current) => ({ ...current, confirmPassword: undefined })); }}
                 placeholder="••••••••"
                 autoComplete="new-password"
-                aria-invalid={Boolean(errors.confirmPassword)}
-                className={`h-[46px] w-full rounded-[14px] border bg-[#1d1e2d] px-[18px] text-[13px] font-medium text-white outline-none transition placeholder:text-[#b4b4bc] ${errors.confirmPassword ? 'border-[#ff321b]' : 'border-transparent focus:border-white/30'}`}
+                aria-invalid={Boolean(confirmPasswordError)}
+                aria-describedby={confirmPasswordError ? 'register-confirm-password-error' : undefined}
+                className={`h-[46px] w-full rounded-[14px] border bg-[#1d1e2d] px-[18px] text-[13px] font-medium text-white outline-none transition placeholder:text-[#b4b4bc] ${confirmPasswordError ? 'border-[#ff321b]' : confirmPasswordValid ? 'border-emerald-500' : 'border-transparent focus:border-white/30'}`}
               />
-              {errors.confirmPassword && <p className="mt-1 text-[11px] text-red-400">{Array.isArray(errors.confirmPassword) ? errors.confirmPassword[0] : errors.confirmPassword}</p>}
+              {confirmPasswordError && <p id="register-confirm-password-error" className="mt-1 text-[11px] text-red-400">{confirmPasswordError}</p>}
             </div>
           </div>
 
           <button
             type="submit"
             disabled={submitting || !isFormValid}
+            aria-live="polite"
             className={`mt-[38px] h-[46px] w-full rounded-full text-[14px] font-bold transition disabled:cursor-not-allowed ${isFormValid && !submitting ? 'bg-[#f12d13] text-white hover:bg-[#dc260e]' : 'bg-[#50515e] text-[#a2a2aa]'}`}
           >
-            {submitting ? 'Creating account...' : 'Sign up'}
+            <span role={submitting ? 'status' : undefined}>{submitting ? 'Creating account...' : 'Sign up'}</span>
           </button>
         </form>
 
-        <div className="mt-[32px] text-center text-[15px] leading-5 text-[#a4a5af]">
-          Already have an account?{' '}
-          <button onClick={openAuthModal} type="button" className="font-bold text-[#ff321b] hover:text-[#ff5845]">
-            Log in
-          </button>
+        <div className="mt-[32px] flex items-center justify-between gap-3 text-[13px] leading-5 text-[#a4a5af]">
+          <span>Already have an account?{' '}
+            <button onClick={openAuthModal} type="button" className="font-bold text-[#ff321b] hover:text-[#ff5845]">
+              Log in
+            </button>
+          </span>
+          <button onClick={closeModals} type="button" className="shrink-0 font-semibold text-gray-300 hover:text-white">Close</button>
         </div>
       </section>
     </div>

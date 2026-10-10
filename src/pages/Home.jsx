@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { getComingSoonMovies, getFeaturedMovies, getNowPlayingMovies, notifyMovie } from '../api/cinema';
 import MovieCard from '../components/MovieCard';
@@ -26,9 +26,12 @@ export default function Home() {
   const [expandedMovieId, setExpandedMovieId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [loadRetry, setLoadRetry] = useState(0);
+  const [loadedSections, setLoadedSections] = useState({});
   const [notifying, setNotifying] = useState({});
-  const [notified, setNotified] = useState({});
-  const [notifyError, setNotifyError] = useState('');
+  const [notificationSaved, setNotificationSaved] = useState({});
+  const [notifyErrors, setNotifyErrors] = useState({});
+  const notifyLocks = useRef(new Set());
   const navigate = useNavigate();
   const heroSlides = featuredMovies.slice(0, 6);
 
@@ -45,15 +48,20 @@ export default function Home() {
       if (featuredResult.status === 'fulfilled') setFeaturedMovies(getMovies(featuredResult.value));
       if (nowPlayingResult.status === 'fulfilled') setNowPlaying(getMovies(nowPlayingResult.value));
       if (comingSoonResult.status === 'fulfilled') setComingSoon(getMovies(comingSoonResult.value));
+      setLoadedSections({
+        featured: featuredResult.status === 'fulfilled',
+        nowPlaying: nowPlayingResult.status === 'fulfilled',
+        comingSoon: comingSoonResult.status === 'fulfilled',
+      });
       if ([featuredResult, nowPlayingResult, comingSoonResult].some((result) => result.status === 'rejected')) {
-        setError('Some cinema data could not be loaded. Please try again later.');
+        setError('Some cinema data could not be loaded. Retry to refresh the unavailable sections.');
       }
       setLoading(false);
     };
 
     fetchHomeData();
     return () => { cancelled = true; };
-  }, []);
+  }, [loadRetry]);
 
   useEffect(() => {
     if (heroPaused || heroSlides.length < 2) return undefined;
@@ -72,23 +80,54 @@ export default function Home() {
     navigate(`/movies/${movie?.slug || movie?.id}`);
   };
 
-  const subscribeToMovie = (movie) => {
-    executeProtected(async () => {
-      setNotifyError('');
-      setNotifying((current) => ({ ...current, [movie.id]: true }));
-      try {
+  const runNotification = async (movie, refreshOnly = false) => {
+    if (notifyLocks.current.has(movie.id)) return;
+    notifyLocks.current.add(movie.id);
+    let savedOnServer = refreshOnly;
+    setNotifyErrors((current) => ({ ...current, [movie.id]: '' }));
+    setNotifying((current) => ({ ...current, [movie.id]: true }));
+    try {
+      if (!refreshOnly) {
         await notifyMovie(movie.slug);
-        setNotified((current) => ({ ...current, [movie.id]: true }));
-      } catch (requestError) {
-        setNotifyError(requestError.response?.data?.message || 'Could not save your notification. Please try again.');
-      } finally {
-        setNotifying((current) => ({ ...current, [movie.id]: false }));
+        savedOnServer = true;
+        setNotificationSaved((current) => ({ ...current, [movie.id]: true }));
       }
-    });
+      const response = await getComingSoonMovies();
+      const refreshedMovies = getMovies(response);
+      setComingSoon(refreshedMovies);
+      setNotificationSaved((current) => ({ ...current, [movie.id]: false }));
+    } catch (requestError) {
+      setNotificationSaved((current) => ({ ...current, [movie.id]: savedOnServer }));
+      setNotifyErrors((current) => ({
+        ...current,
+        [movie.id]: savedOnServer
+          ? 'Your request was saved, but its status could not be refreshed.'
+          : requestError.response?.data?.message || 'Could not save your notification. Please retry.',
+      }));
+    } finally {
+      notifyLocks.current.delete(movie.id);
+      setNotifying((current) => ({ ...current, [movie.id]: false }));
+    }
+  };
+
+  const subscribeToMovie = (movie) => {
+    executeProtected(() => runNotification(movie));
+  };
+
+  const retryNotification = (movie) => {
+    executeProtected(() => runNotification(movie, Boolean(notificationSaved[movie.id])));
   };
 
   return (
     <div className="-mt-6 space-y-4 pb-16">
+      {error && <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3 text-xs text-red-200">
+        <p role="alert">{error}</p>
+          <button type="button" onClick={() => {
+            setLoading(true);
+            setError('');
+            setLoadRetry((attempt) => attempt + 1);
+          }} disabled={loading} className="rounded-full bg-red-500/20 px-3 py-1.5 font-semibold text-white disabled:opacity-50">{loading ? 'Retrying...' : 'Retry'}</button>
+      </div>}
       <section
         className="relative isolate h-[270px] overflow-hidden bg-[#07111b] xl:h-[350px] 2xl:h-[430px]"
         onMouseEnter={() => setHeroPaused(true)}
@@ -137,7 +176,7 @@ export default function Home() {
           );
         })}
 
-        {!heroSlides.length && <h1 className="absolute left-4 top-1/2 -translate-y-1/2 text-3xl font-black uppercase text-white">{loading ? 'Loading featured films...' : 'Cinema, on screen'}</h1>}
+        {!heroSlides.length && <h1 className="absolute left-4 top-1/2 -translate-y-1/2 text-3xl font-black uppercase text-white">{loading ? 'Loading featured films...' : loadedSections.featured ? 'Cinema, on screen' : 'Featured films unavailable'}</h1>}
 
         {heroSlides.length > 1 && (
           <div className="absolute bottom-4 left-4 right-4 z-20 flex items-center gap-3 sm:bottom-5 sm:left-6 sm:right-6 2xl:bottom-8 2xl:left-10 2xl:right-10">
@@ -164,7 +203,7 @@ export default function Home() {
           <h2 className="text-[15px] font-extrabold uppercase text-white 2xl:text-[22px]">Now Playing</h2>
           <Link to="/sessions" className="text-[10px] font-semibold text-red-500 hover:text-red-400 2xl:text-sm">See all</Link>
         </div>
-        {loading ? <p className="text-sm text-gray-400">Loading movies...</p> : nowPlaying.length ? (
+        {loading ? <div role="status" aria-label="Loading now playing movies" className="flex gap-3 overflow-hidden">{Array.from({ length: 5 }, (_, index) => <div key={index} className="h-48 w-[180px] shrink-0 animate-pulse rounded-lg bg-[#1b1d32]" />)}</div> : nowPlaying.length ? (
           <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {nowPlaying.map((movie) => (
               <div
@@ -185,7 +224,7 @@ export default function Home() {
               </div>
             ))}
           </div>
-        ) : <p className="text-sm text-gray-400">No movies are currently available.</p>}
+        ) : loadedSections.nowPlaying ? <p className="text-sm text-gray-400">No movies are currently available.</p> : <p className="text-sm text-gray-400">Now playing movies could not be loaded. Use Retry above.</p>}
       </section>
 
       <section className="space-y-3 border-t border-gray-800/80 pt-5 2xl:pt-7">
@@ -193,9 +232,7 @@ export default function Home() {
           <h2 className="text-[15px] font-extrabold uppercase text-white 2xl:text-[22px]">Coming Soon...</h2>
           <Link to="/sessions" className="text-[10px] font-semibold text-red-500 hover:text-red-400 2xl:text-sm">See all</Link>
         </div>
-        {error && <p role="alert" className="text-xs text-red-400">{error}</p>}
-        {notifyError && <p role="alert" className="text-xs text-red-400">{notifyError}</p>}
-        {loading ? <p className="text-sm text-gray-400">Loading movies...</p> : comingSoon.length ? (
+        {loading ? <div role="status" aria-label="Loading upcoming movies" className="flex gap-3 overflow-hidden">{Array.from({ length: 3 }, (_, index) => <div key={index} className="h-24 w-[min(360px,80vw)] shrink-0 animate-pulse rounded-lg bg-[#1b1d32]" />)}</div> : comingSoon.length ? (
           <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {comingSoon.map((movie) => (
               <article key={movie.id} className="flex w-[calc((100%-24px)/3)] min-w-[210px] max-w-[500px] shrink-0 snap-start items-center gap-2 rounded-[9px] border border-gray-800/80 bg-[#151a2a] p-2 2xl:gap-4 2xl:rounded-xl 2xl:p-4">
@@ -208,17 +245,21 @@ export default function Home() {
                   <p className="mt-1 line-clamp-2 text-[8px] leading-3 text-gray-400 2xl:text-[11px] 2xl:leading-4">{movie.synopsis || movie.genres?.map((genre) => genre.name).join(', ')}</p>
                   <button
                     type="button"
-                    disabled={notifying[movie.id] || notified[movie.id] || movie.isNotified}
+                    disabled={notifying[movie.id] || notificationSaved[movie.id] || movie.isNotified || movie.is_notified}
                     onClick={() => subscribeToMovie(movie)}
                     className="mt-1.5 inline-flex items-center gap-1 rounded-full border border-gray-600 px-2 py-1 text-[8px] font-semibold text-gray-200 transition hover:border-red-500 hover:text-white disabled:cursor-default disabled:opacity-60 2xl:mt-2 2xl:px-3 2xl:py-1.5 2xl:text-[11px]"
                   >
-                    {notifying[movie.id] ? 'Saving...' : notified[movie.id] || movie.isNotified ? '✓ Notified' : '♧ Notify me'}
+                    {notifying[movie.id] ? 'Saving...' : notificationSaved[movie.id] ? 'Requested' : movie.isNotified || movie.is_notified ? '✓ Notified' : '♧ Notify me'}
                   </button>
+                  {notifyErrors[movie.id] && <div className="mt-1 text-[8px] text-red-300">
+                    <p role="alert">{notifyErrors[movie.id]}</p>
+                    <button type="button" onClick={() => retryNotification(movie)} disabled={notifying[movie.id]} className="mt-1 underline disabled:opacity-50">Retry</button>
+                  </div>}
                 </div>
               </article>
             ))}
           </div>
-        ) : <p className="text-sm text-gray-400">No upcoming movies are currently available.</p>}
+        ) : loadedSections.comingSoon ? <p className="text-sm text-gray-400">No upcoming movies are currently available.</p> : <p className="text-sm text-gray-400">Upcoming movies could not be loaded. Use Retry above.</p>}
       </section>
     </div>
   );

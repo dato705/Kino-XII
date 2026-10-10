@@ -32,7 +32,7 @@ function HeaderSearch({ initialValue, onSubmit }) {
 }
 
 export default function Header() {
-  const { user, token, openAuthModal, openRegisterModal, logout } = useAuth();
+  const { user, token, openAuthModal, openRegisterModal, logout, logoutLoading } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -149,16 +149,17 @@ export default function Header() {
                   </Link>
                   <button
                     type="button"
+                    disabled={logoutLoading}
                     onClick={() => {
                       logout();
                       setIsProfileOpen(false);
                     }}
-                    className="mt-1 flex w-full items-center gap-2 border-t border-gray-800 pt-3 text-left text-sm font-semibold text-red-500 transition hover:text-red-400"
+                    className="mt-1 flex w-full items-center gap-2 border-t border-gray-800 pt-3 text-left text-sm font-semibold text-red-500 transition hover:text-red-400 disabled:cursor-wait disabled:opacity-50"
                   >
                     <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M10 17l5-5-5-5m5 5H3m9-9h5a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4h-5" />
                     </svg>
-                    Log out
+                    {logoutLoading ? 'Logging out...' : 'Log out'}
                   </button>
                 </div>
               )}

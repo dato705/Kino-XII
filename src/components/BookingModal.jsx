@@ -56,7 +56,9 @@ export default function BookingModal({
   seatErrors,
   seatLoading,
   bookingLoading,
+  releaseLoading,
   bookingError,
+  bookingRetryAction,
   hold,
   order,
   remainingHoldSeconds,
@@ -73,6 +75,7 @@ export default function BookingModal({
   onPaymentChange,
   onHoldSeats,
   onConfirmOrder,
+  onRetryBooking,
   onBackToSeats,
   onViewTickets,
 }) {
@@ -137,7 +140,7 @@ export default function BookingModal({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-[#050817]/70 p-3 backdrop-blur-sm sm:p-6"
       style={backdrop ? { backgroundImage: `linear-gradient(rgba(5, 8, 23, .78), rgba(5, 8, 23, .86)), url("${backdrop}")`, backgroundPosition: 'center', backgroundSize: 'cover' } : undefined}
-      onClick={onClose}
+      onClick={bookingLoading ? undefined : onClose}
     >
       <section
         role="dialog"
@@ -187,7 +190,7 @@ export default function BookingModal({
             <div className="grid gap-0 px-4 pb-5 pt-4 sm:px-7 sm:pb-6 lg:grid-cols-[minmax(0,1fr)_240px] lg:gap-4">
               <div className="min-w-0">
                 <div className="grid grid-cols-2 rounded-full bg-[#1c2032] p-0.5 text-center text-[9px] font-semibold uppercase">
-                  <button type="button" onClick={() => step === 'checkout' && backToSeats()} className={`rounded-full py-2 transition ${step === 'seats' ? 'bg-[#f12d13] text-white' : 'text-gray-300 hover:text-white'}`}>Seats</button>
+                  <button type="button" onClick={() => step === 'checkout' && backToSeats()} disabled={bookingLoading} className={`rounded-full py-2 transition disabled:cursor-not-allowed disabled:opacity-50 ${step === 'seats' ? 'bg-[#f12d13] text-white' : 'text-gray-300 hover:text-white'}`}>Seats</button>
                   <button type="button" disabled={!hold} className={`rounded-full py-2 transition disabled:cursor-not-allowed disabled:opacity-60 ${step === 'checkout' ? 'bg-[#f12d13] text-white' : 'text-gray-300 hover:text-white'}`}>Checkout</button>
                 </div>
 
@@ -216,7 +219,7 @@ export default function BookingModal({
                                           key={id}
                                           type="button"
                                           onClick={() => onToggleSeat(seat)}
-                                          disabled={unavailable || Boolean(hold) || seatLoading}
+                                          disabled={unavailable || Boolean(hold) || seatLoading || bookingLoading}
                                           aria-pressed={selected}
                                           aria-invalid={seatErrors.includes(id)}
                                           aria-label={`Seat ${seat.code}, ${statusLabel}`}
@@ -291,7 +294,11 @@ export default function BookingModal({
                   </form>
                 )}
 
-                {bookingError && <p role="alert" className="mt-3 rounded-lg bg-red-500/10 p-2.5 text-[10px] text-red-300">{bookingError}</p>}
+                {bookingError && <div className="mt-3 rounded-lg bg-red-500/10 p-2.5 text-[10px] text-red-300">
+                  <p role="alert">{bookingError}</p>
+                  {bookingRetryAction && <button type="button" onClick={onRetryBooking} disabled={bookingLoading} className="mt-2 font-semibold underline disabled:opacity-50">{bookingLoading ? 'Retrying...' : 'Retry'}</button>}
+                </div>}
+                {releaseLoading && <p role="status" className="mt-3 text-center text-[10px] text-gray-400">Releasing seat hold...</p>}
                 {isUnderAge && ageMessage && <p role="alert" className="mt-3 rounded-lg bg-amber-500/10 p-2.5 text-[10px] text-amber-300">{ageMessage}</p>}
               </div>
 
@@ -312,7 +319,7 @@ export default function BookingModal({
                               {ticketTypeOptions.map((type) => {
                                 const isSelected = ticket.typeSlug === type.value;
                                 return (
-                                  <button key={type.value} type="button" onClick={() => onTicketTypeChange(ticket.id, type.value)} disabled={Boolean(type.blockedFromRatingAge && Number(movie?.ageRating?.minAge || 0) >= type.blockedFromRatingAge)} className={`rounded-full px-1 py-1.5 text-[8px] transition disabled:cursor-not-allowed disabled:opacity-40 ${isSelected ? 'bg-[#f12d13] text-white' : 'bg-[#292d41] text-gray-300 hover:bg-[#363a50]'}`}>
+                                  <button key={type.value} type="button" onClick={() => onTicketTypeChange(ticket.id, type.value)} disabled={bookingLoading || Boolean(type.blockedFromRatingAge && Number(movie?.ageRating?.minAge || 0) >= type.blockedFromRatingAge)} className={`rounded-full px-1 py-1.5 text-[8px] transition disabled:cursor-not-allowed disabled:opacity-40 ${isSelected ? 'bg-[#f12d13] text-white' : 'bg-[#292d41] text-gray-300 hover:bg-[#363a50]'}`}>
                                     {type.label} {Math.round(ticketTypeOptions.find((item) => item.value === type.value)?.priceRatio * 100 || 100)}%
                                   </button>
                                 );
@@ -343,9 +350,9 @@ export default function BookingModal({
                   ) : (
                     <>
                       <button type="submit" form="booking-checkout-form" disabled={bookingLoading || !hold?.id} className="w-full rounded-full bg-[#f12d13] px-4 py-2.5 text-[10px] font-bold text-white transition hover:bg-red-600 disabled:cursor-not-allowed disabled:bg-[#4d4f5d] disabled:text-gray-300">
-                        {bookingLoading ? 'Placing order...' : 'Pay: Complete order'}
+                        {releaseLoading ? 'Releasing seats...' : bookingLoading ? 'Placing order...' : 'Pay: Complete order'}
                       </button>
-                      <button type="button" onClick={backToSeats} className="mt-2 w-full text-[9px] text-gray-400 hover:text-white">Back to seats</button>
+                      <button type="button" onClick={backToSeats} disabled={bookingLoading} className="mt-2 w-full text-[9px] text-gray-400 hover:text-white disabled:cursor-wait disabled:opacity-50">{releaseLoading ? 'Releasing seats...' : 'Back to seats'}</button>
                     </>
                   )}
                 </div>
