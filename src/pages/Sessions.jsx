@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import BookingModal from '../components/BookingModal';
 import {
   createOrder,
   createSeatHold,
@@ -75,17 +76,15 @@ const getErrorMessage = (error, fallback) => {
   return fallback;
 };
 
-const formatDateTime = (value) => {
-  if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  return new Intl.DateTimeFormat('en', {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(date);
+const getAge = (dateOfBirth) => {
+  if (!dateOfBirth) return null;
+  const birthDate = new Date(`${dateOfBirth}T00:00:00`);
+  if (Number.isNaN(birthDate.getTime())) return null;
+  const today = new Date();
+  let age = today.getFullYear() - birthDate.getFullYear();
+  if (today.getMonth() < birthDate.getMonth() ||
+    (today.getMonth() === birthDate.getMonth() && today.getDate() < birthDate.getDate())) age -= 1;
+  return age;
 };
 
 const formatSessionTime = (session) => {
@@ -112,7 +111,7 @@ const getWeekDates = () => {
 
 export default function Sessions() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const { executeProtected } = useAuth();
+  const { executeProtected, user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [filterOptions, setFilterOptions] = useState(null);
@@ -129,6 +128,7 @@ export default function Sessions() {
   const [seatLoading, setSeatLoading] = useState(false);
   const [bookingLoading, setBookingLoading] = useState(false);
   const [bookingError, setBookingError] = useState('');
+  const [bookingStep, setBookingStep] = useState('seats');
   const [hold, setHold] = useState(null);
   const [order, setOrder] = useState(null);
   const [remainingHoldSeconds, setRemainingHoldSeconds] = useState(null);
@@ -262,6 +262,7 @@ export default function Sessions() {
     setHold(null);
     setOrder(null);
     setRemainingHoldSeconds(null);
+    setBookingStep('seats');
     setPayment({
       fullName: authenticatedUser?.fullName || '',
       email: authenticatedUser?.email || '',
@@ -291,7 +292,7 @@ export default function Sessions() {
   };
 
   const holdSelectedSeats = async () => {
-    if (!activeSession || selectedSeats.length === 0) return;
+    if (!activeSession || selectedSeats.length === 0 || !bookingAgeAllowed) return false;
     setBookingLoading(true);
     setBookingError('');
     setSeatErrors([]);
@@ -305,6 +306,8 @@ export default function Sessions() {
       const holdId = holdData?.id ?? holdData?.holdId;
       if (!holdId) throw new Error('The API did not return a hold ID.');
       setHold({ ...holdData, id: holdId });
+      setBookingStep('checkout');
+      return true;
     } catch (error) {
       if (error.response?.status === 409) {
         const contested = error.response.data?.contested ?? error.response.data?.seats ?? [];
@@ -339,6 +342,7 @@ export default function Sessions() {
         }
         setBookingError(getErrorMessage(error, 'Could not hold the selected seats. Please try again.'));
       }
+      return false;
     } finally {
       setBookingLoading(false);
     }
@@ -353,7 +357,6 @@ export default function Sessions() {
       const response = await createOrder({ ...payment, holdId: hold.id });
       setOrder(unwrap(response)?.order ?? unwrap(response));
       setHold(null);
-      setSelectedSeats([]);
     } catch (error) {
       const fieldErrors = error.response?.data?.errors;
       if (fieldErrors) {
@@ -394,15 +397,28 @@ export default function Sessions() {
     setRemainingHoldSeconds(null);
     setOrder(null);
     setSeatErrors([]);
+    setSelectedSeats([]);
+    setTicketTypes({});
     setBookingError('');
+    setBookingStep('seats');
+  };
+
+  const returnToSeatSelection = async () => {
+    if (!activeSession) return;
+    if (hold?.id) await releaseHold(hold.id).catch(() => {});
+    setHold(null);
+    setRemainingHoldSeconds(null);
+    setBookingStep('seats');
+    await fetchSeats(activeSession, selectedSeats);
   };
 
   const sessionTitle = (session) => session.movie?.title || session.movie_title || session.title || 'Cinema session';
   const sessionVenue = (session) => session.venue?.name || session.venueName || session.cinema?.name || session.venue_name || session.venue || '';
-  const sessionTime = (session) => formatDateTime(session.startsAt || session.starts_at || session.start_time || session.datetime || session.date);
   const seatCap = Number(filterOptions?.maxSeatsPerOrder);
-  const holdMinutes = filterOptions?.holdMinutes;
-  const venueOptions = getOptions(filterOptions, 'venues');
+  const venueOptions = getOptions(filterOptions, 'venues').map((option) => {
+    const venue = (filterOptions?.venues || []).find((entry) => entry.slug === option.value);
+    return venue?.city ? { ...option, label: `${option.label} · ${venue.city}` } : option;
+  });
   const formatOptions = getOptions(filterOptions, 'formats');
   const selectedVenueSlugs = searchParams.getAll('venues[]');
   const selectedVenueData = (filterOptions?.venues || []).filter((venue) => selectedVenueSlugs.includes(venue.slug));
@@ -411,11 +427,20 @@ export default function Sessions() {
       (venue.formats || []).some((entry) => (entry.slug ?? entry) === format.value)
     ))
     : formatOptions;
-  const ticketTypeOptions = getOptions(filterOptions, 'ticketTypes');
+  const ticketTypeOptions = getOptions(filterOptions, 'ticketTypes').map((option) => {
+    const ticketType = (filterOptions?.ticketTypes || []).find((type) => type.slug === option.value);
+    return { ...ticketType, ...option };
+  });
   const minAge = Number(activeSession?.movie?.ageRating?.minAge ?? activeSession?.movie?.age_rating?.min_age ?? 0);
+  const userAge = getAge(user?.dateOfBirth || user?.date_of_birth);
+  const bookingAgeAllowed = !activeSession || minAge === 0 || (userAge !== null && userAge >= minAge);
+  const ageMessage = activeSession && !bookingAgeAllowed
+    ? userAge === null
+      ? 'Your age could not be verified from your profile.'
+      : `This film is rated ${activeSession.movie?.ageRating?.code || activeSession.movie?.age_rating?.code || `${minAge}+`}. You cannot buy tickets for it with this account.`
+    : '';
   const visibleTicketTypes = ticketTypeOptions.filter((option) => {
-    const ticketType = (filterOptions?.ticketTypes || []).find((item) => item.slug === option.value);
-    return ticketType?.blockedFromRatingAge == null || minAge < ticketType.blockedFromRatingAge;
+    return option.blockedFromRatingAge == null || minAge < option.blockedFromRatingAge;
   });
   const currentPage = Number(searchParams.get('page') || 1);
   const weekDates = getWeekDates();
@@ -479,6 +504,7 @@ export default function Sessions() {
         setHold(null);
         setSelectedSeats([]);
         setRemainingHoldSeconds(null);
+        setBookingStep('seats');
         fetchSeats(activeSession).then(() => {
           setBookingError('Your hold time expired. Please re-select your seats.');
         });
@@ -528,9 +554,12 @@ export default function Sessions() {
           <button
             type="button"
             onClick={() => {
+              const retainedParams = new URLSearchParams();
+              const selectedDate = searchParams.get('date');
+              if (selectedDate) retainedParams.set('date', selectedDate);
               setLoading(true);
               setSessionsError('');
-              setSearchParams({});
+              setSearchParams(retainedParams);
             }}
             disabled={!queryString}
             className="w-full rounded-full border border-gray-500 px-3 py-1.5 text-[10px] font-semibold text-gray-200 transition hover:border-gray-300 hover:text-white disabled:opacity-40"
@@ -544,11 +573,7 @@ export default function Sessions() {
 
         <section className="min-w-0">
           <div className="mb-4 flex items-center justify-between gap-4 text-[10px] text-gray-300">
-            <p>
-              {groupedSessions.size
-                ? `Showing ${(currentPage - 1) * MOVIES_PER_PAGE + 1}-${Math.min(currentPage * MOVIES_PER_PAGE, groupedSessions.size)} of ${groupedSessions.size} movies`
-                : '0 movies'}
-            </p>
+            {!loading && <p>{sessions.length ? `Showing ${sessions.length} sessions` : 'No sessions found'}</p>}
             <label className="flex items-center gap-1.5 whitespace-nowrap text-gray-400">
               Sort:
               <select
@@ -636,7 +661,7 @@ export default function Sessions() {
                 );
               })}
             </div>
-          ) : !sessionsError ? <p className="py-12 text-center text-sm text-gray-400">No sessions match these filters.</p> : null}
+          ) : !sessionsError ? <p className="py-12 text-center text-sm text-gray-400">No sessions found</p> : null}
         </section>
       </div>
 
@@ -681,149 +706,38 @@ export default function Sessions() {
       )}
 
       {activeSession && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4" onClick={closeBooking}>
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="booking-title"
-            className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-gray-800 bg-[#0B0E17] p-5 text-white sm:p-7"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 id="booking-title" className="text-xl font-bold">{sessionTitle(activeSession)}</h2>
-                <p className="mt-1 text-sm text-gray-400">{sessionVenue(activeSession)} · {sessionTime(activeSession)}</p>
-              </div>
-              <button type="button" onClick={closeBooking} aria-label="Close seat selection" className="text-xl text-gray-400 hover:text-white">×</button>
-            </div>
-
-            {seatLoading ? <p className="py-12 text-center text-gray-400">Loading seats...</p> : (
-              <div className="mt-6">
-                <div className="mb-6 rounded bg-gray-700 py-1 text-center text-xs font-bold uppercase text-gray-300">Screen</div>
-                <div className="space-y-7">
-                  {seatSections.map((section) => (
-                    <section key={section.id || section.name} className="space-y-3">
-                      <h3 className="text-center text-xs font-bold uppercase tracking-wider text-gray-400">{section.name}</h3>
-                      <div className="space-y-2">
-                        {(section.rows || []).map((row) => (
-                          <div key={row.id || row.label || row.name} className="flex items-center justify-center gap-2">
-                            <span className="w-6 text-right text-xs text-gray-500">{row.label || row.name}</span>
-                            <div className="flex items-center gap-1.5">
-                              {(row.seats || []).map((seat) => {
-                                const id = seatId(seat);
-                                const unavailable = isSeatUnavailable(seat);
-                                const selected = selectedSeats.includes(id);
-                                if (seat.state === 'unavailable') return <span key={id} className="h-9 w-8" aria-hidden="true" />;
-                                return (
-                                  <span key={id} className="flex items-center">
-                                    <button
-                                      type="button"
-                                      onClick={() => toggleSeat(seat)}
-                                      disabled={unavailable || Boolean(hold)}
-                                      aria-pressed={selected}
-                                      aria-invalid={seatErrors.includes(id)}
-                                      aria-label={`Seat ${seat.code}`}
-                                      title={`${seat.code}${seat.isMine ? ' · Yours' : ''}`}
-                                      className={`h-9 min-w-9 rounded-t-lg px-2 text-xs font-bold transition ${
-                                        unavailable ? 'cursor-not-allowed bg-gray-800 text-gray-600' :
-                                          seatErrors.includes(id) ? 'bg-red-900 text-red-200 ring-2 ring-red-500' :
-                                            selected || seat.isMine ? 'bg-red-500 text-white' : 'bg-emerald-700/70 text-emerald-100 hover:bg-emerald-600'
-                                      }`}
-                                    >
-                                      {seat.label}
-                                    </button>
-                                    {seat.aisleAfter && <span className="w-4" aria-hidden="true" />}
-                                  </span>
-                                );
-                              })}
-                            </div>
-                            <span className="w-6 text-xs text-gray-500">{row.label || row.name}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </section>
-                  ))}
-                </div>
-                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 text-xs text-gray-400">
-                  <span>{selectedSeats.length} selected{Number.isFinite(seatCap) && seatCap > 0 ? ` · max ${seatCap}` : ''}</span>
-                  {holdMinutes && !hold && <span>Seats stay held for {holdMinutes} minutes.</span>}
-                </div>
-                {selectedSeats.length > 0 && !hold && (
-                  <div className="mt-5 space-y-2 border-t border-gray-800 pt-4">
-                    {selectedSeats.map((id) => {
-                      const seat = seats.find((item) => seatId(item) === id);
-                      return (
-                        <label key={id} className="flex items-center justify-between gap-4 text-sm">
-                          <span>{seat?.code || `Seat ${seat?.label}`}</span>
-                          <select value={ticketTypes[id] || 'adult'} onChange={(event) => setTicketTypes((types) => ({ ...types, [id]: event.target.value }))} className="rounded-lg border border-gray-700 bg-[#161B26] px-3 py-2 text-white">
-                            {visibleTicketTypes.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
-                          </select>
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {bookingError && <p role="alert" className="mt-4 rounded-lg bg-red-500/10 p-3 text-sm text-red-300">{bookingError}</p>}
-            {order && (
-              <div role="status" className="mt-5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-emerald-200">
-                <p className="font-bold">Order confirmed</p>
-                <p className="mt-1 text-sm">Reference: {order.reference}</p>
-              </div>
-            )}
-            {hold && !order && (
-              <>
-                <p role="status" className="mt-4 rounded-lg bg-emerald-500/10 p-3 text-sm text-emerald-300">
-                  Seats are held{remainingHoldSeconds !== null ? ` · ${Math.floor(remainingHoldSeconds / 60)}:${String(remainingHoldSeconds % 60).padStart(2, '0')} remaining` : ''}.
-                </p>
-                <form onSubmit={confirmOrder} className="mt-5 space-y-4 border-t border-gray-800 pt-5">
-                  <h3 className="font-bold">Payment details</h3>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {[
-                      ['fullName', 'Full name', 'text'],
-                      ['email', 'Email', 'email'],
-                      ['mobileNumber', 'Mobile number', 'tel'],
-                      ['cardNumber', 'Card number', 'text'],
-                      ['expiry', 'Expiry date (MM/YY)', 'text'],
-                      ['cvv', 'CVV', 'password'],
-                    ].map(([key, label, type]) => (
-                      <label key={key} className="space-y-1 text-xs font-semibold text-gray-400">
-                        <span>{label}</span>
-                        <input
-                          type={type}
-                          value={payment[key]}
-                          onChange={(event) => setPayment((current) => ({ ...current, [key]: event.target.value }))}
-                          autoComplete={key === 'fullName' ? 'name' : key === 'email' ? 'email' : key === 'mobileNumber' ? 'tel' : key === 'cardNumber' ? 'cc-number' : key === 'expiry' ? 'cc-exp' : 'cc-csc'}
-                          inputMode={['mobileNumber', 'cardNumber', 'cvv'].includes(key) ? 'numeric' : undefined}
-                          className={`w-full rounded-lg border bg-[#161B26] px-3 py-2.5 text-sm text-white outline-none focus:border-red-500 ${paymentErrors[key] ? 'border-red-500' : 'border-gray-800'}`}
-                        />
-                        {paymentErrors[key] && <span className="block text-red-400">{Array.isArray(paymentErrors[key]) ? paymentErrors[key][0] : paymentErrors[key]}</span>}
-                      </label>
-                    ))}
-                  </div>
-                  <div className="flex flex-wrap justify-end gap-3 border-t border-gray-800 pt-4">
-                    <button type="button" onClick={closeBooking} className="rounded-lg border border-gray-700 px-4 py-2.5 text-sm font-semibold text-gray-300 hover:bg-white/5">Close</button>
-                    <button type="submit" disabled={paymentLoading || bookingLoading} className="rounded-lg bg-red-500 px-5 py-2.5 text-sm font-bold text-white hover:bg-red-600 disabled:opacity-50">
-                      {paymentLoading ? 'Placing order...' : 'Pay and confirm'}
-                    </button>
-                  </div>
-                </form>
-              </>
-            )}
-
-            {!hold && !order && (
-              <div className="mt-6 flex justify-end gap-3 border-t border-gray-800 pt-5">
-                <button type="button" onClick={closeBooking} className="rounded-lg border border-gray-700 px-4 py-2.5 text-sm font-semibold text-gray-300 hover:bg-white/5">Close</button>
-                <button type="button" onClick={holdSelectedSeats} disabled={bookingLoading || seatLoading || !selectedSeats.length} className="rounded-lg bg-red-500 px-5 py-2.5 text-sm font-bold text-white hover:bg-red-600 disabled:opacity-50">
-                  {bookingLoading ? 'Holding seats...' : 'Hold selected seats'}
-                </button>
-              </div>
-            )}
-            {order && <div className="mt-5 flex justify-end"><button type="button" onClick={closeBooking} className="rounded-lg bg-red-500 px-5 py-2.5 text-sm font-bold text-white">Done</button></div>}
-          </section>
-        </div>
+        <BookingModal
+          session={activeSession}
+          seatSections={seatSections}
+          seats={seats}
+          selectedSeats={selectedSeats}
+          ticketTypes={ticketTypes}
+          seatErrors={seatErrors}
+          seatLoading={seatLoading}
+          bookingLoading={bookingLoading}
+          bookingError={bookingError}
+          hold={hold}
+          order={order}
+          remainingHoldSeconds={remainingHoldSeconds}
+          seatCap={seatCap}
+          ticketTypeOptions={visibleTicketTypes}
+          payment={payment}
+          paymentErrors={paymentErrors}
+          ageAllowed={bookingAgeAllowed}
+          ageMessage={ageMessage}
+          step={bookingStep}
+          onClose={closeBooking}
+          onToggleSeat={toggleSeat}
+          onTicketTypeChange={(id, type) => setTicketTypes((current) => ({ ...current, [id]: type }))}
+          onPaymentChange={(key, value) => setPayment((current) => ({ ...current, [key]: value }))}
+          onHoldSeats={holdSelectedSeats}
+          onConfirmOrder={confirmOrder}
+          onBackToSeats={returnToSeatSelection}
+          onViewTickets={() => {
+            closeBooking();
+            navigate('/profile');
+          }}
+        />
       )}
     </div>
   );

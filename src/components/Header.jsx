@@ -1,15 +1,59 @@
 import { useState } from 'react';
-import { Link, NavLink } from 'react-router-dom';
+import { Link, NavLink, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+
+function HeaderSearch({ initialValue, onSubmit }) {
+  const [searchValue, setSearchValue] = useState(initialValue);
+
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit(searchValue);
+      }}
+      role="search"
+      className="relative hidden w-64 md:block md:w-80"
+    >
+      <button type="submit" aria-label="Search" className="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400 hover:text-white">
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+        </svg>
+      </button>
+      <input
+        type="search"
+        value={searchValue}
+        onChange={(event) => setSearchValue(event.target.value)}
+        aria-label="Search films and live events"
+        placeholder="Search films and live events"
+        className="w-full rounded-full border border-gray-800 bg-[#161B26] py-2.5 pl-9 pr-4 text-xs text-white placeholder-gray-400 transition focus:border-red-500 focus:outline-none"
+      />
+    </form>
+  );
+}
 
 export default function Header() {
   const { user, token, openAuthModal, openRegisterModal, logout } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const currentSearch = location.pathname === '/sessions' ? searchParams.get('search') || '' : '';
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const isAuthenticated = Boolean(user && token);
   const displayName = user?.fullName || user?.username || user?.name || 'User';
   const email = user?.email || '';
   const avatar = user?.avatar_url || user?.avatar || user?.profile_image;
   const initials = displayName.slice(0, 2).toUpperCase();
+
+  const submitSearch = (searchValue) => {
+    const params = location.pathname === '/sessions' ? new URLSearchParams(searchParams) : new URLSearchParams();
+    const query = searchValue.trim();
+    params.delete('page');
+    if (query) params.set('search', query);
+    else params.delete('search');
+    if (params.toString()) params.set('page', '1');
+    const queryString = params.toString();
+    navigate({ pathname: '/sessions', search: queryString ? `?${queryString}` : '' });
+  };
 
   return (
     <header className="sticky top-0 z-50 border-b border-gray-800/60 bg-[#0B0E17] px-4 py-3 text-white sm:px-6 sm:py-4 lg:px-8">
@@ -32,19 +76,11 @@ export default function Header() {
 
         {/* Right Side Actions */}
         <div className="flex items-center gap-2 sm:gap-4">
-          {/* Search Bar */}
-          <div className="relative hidden w-64 md:block md:w-80">
-            <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-gray-400">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-            </span>
-            <input 
-              type="text" 
-              placeholder="Search films and live events" 
-              className="w-full bg-[#161B26] text-xs text-white placeholder-gray-400 rounded-full py-2.5 pl-9 pr-4 border border-gray-800 focus:outline-none focus:border-red-500 transition"
-            />
-          </div>
+          <HeaderSearch
+            key={`${location.pathname}:${currentSearch}`}
+            initialValue={currentSearch}
+            onSubmit={submitSearch}
+          />
 
           {isAuthenticated ? (
             <div className="relative">
