@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { getFilterOptions, getMyTickets, refundOrder } from '../api/cinema';
 import { useAuth } from '../context/AuthContext';
 
@@ -48,7 +48,14 @@ const getOrderKey = (order) => String(order.id ?? order.reference ?? order.code)
 
 export default function Profile() {
   const { user, token, openAuthModal, updateProfile } = useAuth();
-  const [activeTab, setActiveTab] = useState('personal');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = searchParams.get('tab') === 'tickets' ? 'tickets' : 'personal';
+  const setActiveTab = (tab) => {
+    const nextParams = new URLSearchParams(searchParams);
+    if (tab === 'tickets') nextParams.set('tab', 'tickets');
+    else nextParams.delete('tab');
+    setSearchParams(nextParams);
+  };
   const authRequested = useRef(false);
 
   useEffect(() => {

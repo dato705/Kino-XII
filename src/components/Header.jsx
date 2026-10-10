@@ -138,7 +138,7 @@ export default function Header() {
                     My Profile
                   </Link>
                   <Link
-                    to="/sessions"
+                    to="/profile?tab=tickets"
                     onClick={() => setIsProfileOpen(false)}
                     className="flex items-center gap-2 rounded-lg px-1 py-2 text-sm font-semibold text-white transition hover:text-gray-300"
                   >
