@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { getComingSoonMovies, getFeaturedMovies, getNowPlayingMovies, notifyMovie } from '../api/cinema';
 import MovieCard from '../components/MovieCard';
-import { useAuth } from '../context/AuthContext';
 
 const getMovies = (response) => {
   const payload = response?.data?.data ?? response?.data;
@@ -30,7 +29,6 @@ export default function Home() {
   const [notifying, setNotifying] = useState({});
   const [notified, setNotified] = useState({});
   const [notifyError, setNotifyError] = useState('');
-  const { executeProtected } = useAuth();
   const navigate = useNavigate();
   const heroSlides = featuredMovies.slice(0, 6);
 
@@ -70,8 +68,8 @@ export default function Home() {
     setActiveIndex((current) => (current + direction + heroSlides.length) % heroSlides.length);
   };
 
-  const buyFeaturedTickets = (movie) => {
-    executeProtected(() => navigate(`/sessions?search=${encodeURIComponent(movie?.title || '')}`));
+  const openFeaturedMovie = (movie) => {
+    navigate(`/movies/${movie?.slug || movie?.id}`);
   };
 
   const subscribeToMovie = (movie) => {
@@ -117,7 +115,7 @@ export default function Home() {
                   Premiere · Week of {releaseLabel(movie.releaseDate)}
                 </span>
                 <h1 className="text-[25px] font-black uppercase leading-[1.05] text-white sm:text-[32px] 2xl:text-[48px]">
-                  {movie.title}
+                  <Link to={`/movies/${movie.slug || movie.id}`} tabIndex={isActive ? 0 : -1} className="rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-red-500">{movie.title}</Link>
                 </h1>
                 <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[9px] font-semibold text-gray-200 2xl:mt-4 2xl:gap-2 2xl:text-xs">
                   {movie.ageRating?.code && <span className="rounded-full bg-red-500/80 px-2 py-1 text-white 2xl:px-3 2xl:py-1.5">{movie.ageRating.code}</span>}
@@ -126,7 +124,7 @@ export default function Home() {
                 </div>
                 {movie.synopsis && <p className="mt-2 line-clamp-3 max-w-[420px] text-[10px] leading-[1.45] text-gray-300 sm:text-[11px] 2xl:mt-4 2xl:max-w-[700px] 2xl:text-base">{movie.synopsis}</p>}
                 <div className="mt-3 flex flex-wrap gap-2 2xl:mt-5 2xl:gap-3">
-                  <button type="button" tabIndex={isActive ? 0 : -1} onClick={() => buyFeaturedTickets(movie)} className="inline-flex h-8 items-center gap-2 rounded-full bg-[#f12d13] px-3 text-[10px] font-bold text-white transition hover:bg-red-600 2xl:h-11 2xl:px-5 2xl:text-sm">
+                  <button type="button" tabIndex={isActive ? 0 : -1} onClick={() => openFeaturedMovie(movie)} className="inline-flex h-8 items-center gap-2 rounded-full bg-[#f12d13] px-3 text-[10px] font-bold text-white transition hover:bg-red-600 2xl:h-11 2xl:px-5 2xl:text-sm">
                     <svg viewBox="0 0 20 20" className="h-3 w-3 2xl:h-4 2xl:w-4" fill="currentColor" aria-hidden="true"><path d="M4 3h12a1 1 0 0 1 1 1v3a2 2 0 0 0 0 4v3a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-3a2 2 0 0 0 0-4V4a1 1 0 0 1 1-1Zm5 2v2h2V5H9Zm0 4v2h2V9H9Zm0 4v2h2v-2H9Z" /></svg>
                     Buy tickets
                   </button>
@@ -201,12 +199,12 @@ export default function Home() {
           <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {comingSoon.map((movie) => (
               <article key={movie.id} className="flex w-[calc((100%-24px)/3)] min-w-[210px] max-w-[500px] shrink-0 snap-start items-center gap-2 rounded-[9px] border border-gray-800/80 bg-[#151a2a] p-2 2xl:gap-4 2xl:rounded-xl 2xl:p-4">
-                <div className="aspect-[16/9] w-[42%] shrink-0 overflow-hidden rounded-md bg-[#202638] 2xl:rounded-lg">
+                <Link to={`/movies/${movie.slug || movie.id}`} aria-label={`View ${movie.title} details`} className="aspect-[16/9] w-[42%] shrink-0 overflow-hidden rounded-md bg-[#202638] outline-none focus-visible:ring-2 focus-visible:ring-red-500 2xl:rounded-lg">
                   {movie.posterUrl && <img src={movie.posterUrl} alt="" className="h-full w-full object-cover" />}
-                </div>
+                </Link>
                 <div className="min-w-0 flex-1">
                   <p className="mb-1 text-[8px] font-bold uppercase text-red-500 2xl:text-[11px]">In cinemas {releaseLabel(movie.releaseDate)}</p>
-                  <h3 className="truncate text-[10px] font-bold leading-3 text-white 2xl:text-sm 2xl:leading-5">{movie.title}</h3>
+                  <h3 className="truncate text-[10px] font-bold leading-3 text-white 2xl:text-sm 2xl:leading-5"><Link to={`/movies/${movie.slug || movie.id}`} className="hover:text-red-300">{movie.title}</Link></h3>
                   <p className="mt-1 line-clamp-2 text-[8px] leading-3 text-gray-400 2xl:text-[11px] 2xl:leading-4">{movie.synopsis || movie.genres?.map((genre) => genre.name).join(', ')}</p>
                   <button
                     type="button"

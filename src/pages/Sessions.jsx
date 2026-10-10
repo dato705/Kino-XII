@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import BookingModal from '../components/BookingModal';
+import getSessionDates from '../utils/sessionDates';
 import {
   createOrder,
   createSeatHold,
@@ -95,20 +96,6 @@ const formatSessionTime = (session) => {
   return new Intl.DateTimeFormat('en', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
 };
 
-const getWeekDates = () => {
-  const start = new Date();
-  if (Number.isNaN(start.getTime())) return [];
-  return Array.from({ length: 7 }, (_, index) => {
-    const date = new Date(start);
-    date.setDate(start.getDate() + index);
-    return {
-      value: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`,
-      weekday: new Intl.DateTimeFormat('en', { weekday: 'short' }).format(date),
-      day: new Intl.DateTimeFormat('en', { day: 'numeric' }).format(date),
-    };
-  });
-};
-
 export default function Sessions() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { executeProtected, user } = useAuth();
@@ -137,6 +124,7 @@ export default function Sessions() {
   const queryString = searchParams.toString();
   const filterParams = new URLSearchParams(searchParams);
   filterParams.delete('page');
+  filterParams.delete('session');
   const filtersQueryString = filterParams.toString();
   const queryStringRef = useRef(queryString);
 
@@ -218,7 +206,7 @@ export default function Sessions() {
     setSearchParams(nextParams);
   };
 
-  const fetchSeats = async (session, preserveSelection = []) => {
+  const fetchSeats = useCallback(async (session, preserveSelection = []) => {
     setSeatLoading(true);
     setBookingError('');
     try {
@@ -246,9 +234,9 @@ export default function Sessions() {
     } finally {
       setSeatLoading(false);
     }
-  };
+  }, []);
 
-  const openBooking = (session, authenticatedUser) => {
+  const openBooking = useCallback((session, authenticatedUser) => {
     if (!authenticatedUser?.profileComplete) {
       navigate('/profile', { state: { from: location.pathname + location.search } });
       return;
@@ -272,7 +260,17 @@ export default function Sessions() {
       cvv: '',
     });
     fetchSeats(session);
-  };
+  }, [fetchSeats, location.pathname, location.search, navigate]);
+
+  const requestedSessionId = searchParams.get('session');
+  useEffect(() => {
+    if (!requestedSessionId || loading) return;
+    const targetSession = sessions.find((session) => String(session.id) === requestedSessionId);
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete('session');
+    setSearchParams(nextParams, { replace: true });
+    if (targetSession) executeProtected((authenticatedUser) => openBooking(targetSession, authenticatedUser));
+  }, [requestedSessionId, sessions, loading, searchParams, setSearchParams, executeProtected, openBooking]);
 
   const toggleSeat = (seat) => {
     const id = seatId(seat);
@@ -354,7 +352,11 @@ export default function Sessions() {
     setBookingLoading(true);
     setPaymentErrors({});
     try {
-      const response = await createOrder({ ...payment, holdId: hold.id });
+      const response = await createOrder({
+        ...payment,
+        cardNumber: payment.cardNumber.replace(/\s/g, ''),
+        holdId: hold.id,
+      });
       setOrder(unwrap(response)?.order ?? unwrap(response));
       setHold(null);
     } catch (error) {
@@ -443,7 +445,7 @@ export default function Sessions() {
     return option.blockedFromRatingAge == null || minAge < option.blockedFromRatingAge;
   });
   const currentPage = Number(searchParams.get('page') || 1);
-  const weekDates = getWeekDates();
+  const weekDates = getSessionDates();
   const activeFilterCount = FILTERS.reduce((count, { key }) => count + searchParams.getAll(key).length, 0) +
     Number(Boolean(searchParams.get('search'))) + Number(Boolean(searchParams.get('sort')));
   const renderFilter = ({ key, source, label }) => {
@@ -513,7 +515,7 @@ export default function Sessions() {
     const timer = window.setInterval(updateCountdown, 1000);
     window.setTimeout(updateCountdown, 0);
     return () => window.clearInterval(timer);
-  }, [hold?.id, hold?.expiresAt, activeSession]);
+  }, [hold?.id, hold?.expiresAt, activeSession, fetchSeats]);
 
   return (
     <div className="pb-16">

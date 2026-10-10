@@ -31,6 +31,21 @@ const getFieldError = (errors, key) => {
   const error = errors?.[key];
   return Array.isArray(error) ? error[0] : error;
 };
+const formatCardNumber = (value) => value.replace(/\D/g, '').slice(0, 16).replace(/(\d{4})(?=\d)/g, '$1 ');
+const formatExpiry = (value) => {
+  const digits = value.replace(/\D/g, '').slice(0, 4);
+  return digits.length >= 2 ? `${digits.slice(0, 2)}/${digits.slice(2)}` : digits;
+};
+const getCaretPosition = (value, digitCount) => {
+  if (!digitCount) return 0;
+  let foundDigits = 0;
+  let position = 0;
+  while (position < value.length && foundDigits < digitCount) {
+    if (/\d/.test(value[position])) foundDigits += 1;
+    position += 1;
+  }
+  return position;
+};
 
 export default function BookingModal({
   session,
@@ -98,6 +113,17 @@ export default function BookingModal({
   }, {});
   const ticketsDescription = Object.entries(ticketsSummary).map(([name, count]) => `${count} × ${name}`).join(', ');
   const isUnderAge = !ageAllowed;
+
+  const handleFormattedInput = (event, key, formatter) => {
+    const input = event.currentTarget;
+    const digitsBeforeCaret = input.value.slice(0, input.selectionStart ?? input.value.length).replace(/\D/g, '').length;
+    const formattedValue = formatter(input.value);
+    onPaymentChange(key, formattedValue);
+    requestAnimationFrame(() => {
+      const position = getCaretPosition(formattedValue, digitsBeforeCaret);
+      input.setSelectionRange(position, position);
+    });
+  };
 
   const submitHold = async () => {
     await onHoldSeats();
@@ -183,7 +209,8 @@ export default function BookingModal({
                                       const unavailable = isSoldSeat(seat) || isHeldByOther(seat) || seat.available === false || seat.is_available === false;
                                       const selected = selectedSeats.includes(id) || seat.isMine;
                                       const held = isHeldByOther(seat);
-                                      if (seat.state === 'unavailable') return <span key={id} className="h-8 w-6 shrink-0 sm:w-8" aria-hidden="true" />;
+                                      const sold = isSoldSeat(seat) && seatStatus(seat) !== 'unavailable';
+                                      const statusLabel = selected ? 'selected' : held ? 'held by another user' : sold ? 'sold' : unavailable ? 'unavailable' : 'available';
                                       return (
                                         <button
                                           key={id}
@@ -192,14 +219,14 @@ export default function BookingModal({
                                           disabled={unavailable || Boolean(hold) || seatLoading}
                                           aria-pressed={selected}
                                           aria-invalid={seatErrors.includes(id)}
-                                          aria-label={`Seat ${seat.code}`}
-                                          title={`${seat.code}${seat.isMine ? ' · Yours' : ''}`}
+                                          aria-label={`Seat ${seat.code}, ${statusLabel}`}
+                                          title={`${seat.code} · ${statusLabel}${seat.isMine ? ' · Yours' : ''}`}
                                           className={`flex h-8 min-w-6 shrink-0 items-center justify-center rounded-md border px-1 text-[9px] font-semibold transition sm:min-w-9 sm:px-2 ${
                                             seatErrors.includes(id) ? 'border-red-400 bg-red-900 text-white' :
                                               selected ? 'border-[#f12d13] bg-[#f12d13] text-white' :
-                                                held ? 'border-transparent bg-[repeating-linear-gradient(135deg,#343647_0px,#343647_5px,#454758_5px,#454758_10px)] text-gray-400' :
-                                                  unavailable ? 'border-transparent bg-[#1b1d30] text-gray-600' :
-                                                    'border-[#3b3e50] bg-[#1d2032] text-white hover:border-gray-300'
+                                                  held ? 'border border-[#bd762d] bg-[repeating-linear-gradient(135deg,#75461c_0px,#75461c_5px,#a65d26_5px,#a65d26_10px)] text-amber-100' :
+                                                    unavailable ? 'border border-[#3d4153] bg-[#25283a] text-gray-300' :
+                                                    'border-[#718096] bg-[#354054] text-gray-100 hover:border-gray-300 hover:bg-[#414c63]'
                                           }`}
                                         >
                                           {seat.label}
@@ -217,10 +244,10 @@ export default function BookingModal({
                       </div>
                     )}
                     <div className="mt-4 flex flex-wrap justify-center gap-x-4 gap-y-2 text-[9px] text-gray-400">
-                      <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded border border-[#3b3e50] bg-[#1d2032]" />Available</span>
+                      <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded border border-[#718096] bg-[#354054]" />Available</span>
                       <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded bg-[#f12d13]" />Selected</span>
-                      <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded bg-[#1b1d30]" />Sold</span>
-                      <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded bg-[repeating-linear-gradient(135deg,#343647_0px,#343647_4px,#454758_4px,#454758_8px)]" />Held by another user</span>
+                      <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded border border-[#3d4153] bg-[#25283a]" />Sold / unavailable</span>
+                      <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded border border-[#bd762d] bg-[repeating-linear-gradient(135deg,#75461c_0px,#75461c_4px,#a65d26_4px,#a65d26_8px)]" />Held by another user</span>
                     </div>
                   </div>
                 ) : (
@@ -245,13 +272,13 @@ export default function BookingModal({
                     <div className="border-t border-white/5 pt-3">
                       <label className="block space-y-1 text-[9px] font-semibold text-gray-300">
                         <span>Card Number</span>
-                        <input type="text" value={payment.cardNumber} onChange={(event) => onPaymentChange('cardNumber', event.target.value)} autoComplete="cc-number" inputMode="numeric" className={`w-full rounded-lg border bg-[#1c2032] px-3 py-2.5 text-xs text-white outline-none focus:border-red-500 ${paymentErrors.cardNumber ? 'border-red-500' : 'border-transparent'}`} />
+                        <input type="text" value={payment.cardNumber} onChange={(event) => handleFormattedInput(event, 'cardNumber', formatCardNumber)} autoComplete="cc-number" inputMode="numeric" maxLength={19} placeholder="0000 0000 0000 0000" className={`w-full rounded-lg border bg-[#1c2032] px-3 py-2.5 text-xs text-white outline-none focus:border-red-500 ${paymentErrors.cardNumber ? 'border-red-500' : 'border-transparent'}`} />
                         {getFieldError(paymentErrors, 'cardNumber') && <span className="block text-red-400">{getFieldError(paymentErrors, 'cardNumber')}</span>}
                       </label>
                       <div className="mt-3 grid gap-3 sm:grid-cols-2">
                         <label className="space-y-1 text-[9px] font-semibold text-gray-300">
                           <span>Expiry</span>
-                          <input type="text" value={payment.expiry} onChange={(event) => onPaymentChange('expiry', event.target.value)} autoComplete="cc-exp" placeholder="MM/YY" className={`w-full rounded-lg border bg-[#1c2032] px-3 py-2.5 text-xs text-white outline-none focus:border-red-500 ${paymentErrors.expiry ? 'border-red-500' : 'border-transparent'}`} />
+                          <input type="text" value={payment.expiry} onChange={(event) => handleFormattedInput(event, 'expiry', formatExpiry)} autoComplete="cc-exp" inputMode="numeric" maxLength={5} placeholder="MM/YY" className={`w-full rounded-lg border bg-[#1c2032] px-3 py-2.5 text-xs text-white outline-none focus:border-red-500 ${paymentErrors.expiry ? 'border-red-500' : 'border-transparent'}`} />
                           {getFieldError(paymentErrors, 'expiry') && <span className="block text-red-400">{getFieldError(paymentErrors, 'expiry')}</span>}
                         </label>
                         <label className="space-y-1 text-[9px] font-semibold text-gray-300">

@@ -3,6 +3,7 @@ import { AuthProvider } from './context/AuthContext';
 import Header from './components/Header';
 import Home from './pages/Home';
 import Sessions from './pages/Sessions';
+import MovieDetails from './pages/MovieDetails';
 import Profile from './pages/Profile';
 import AuthModal from './components/AuthModal';
 import RegisterModal from './components/RegisterModal';
@@ -17,6 +18,7 @@ export default function App() {
             <Routes>
               <Route path="/" element={<Home />} />
               <Route path="/sessions" element={<Sessions />} />
+              <Route path="/movies/:slug" element={<MovieDetails />} />
               <Route path="/profile" element={<Profile />} />
             </Routes>
           </main>

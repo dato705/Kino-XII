@@ -1,13 +1,11 @@
 import { useState } from 'react';
-import { useAuth } from '../context/AuthContext';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 
 // Reusable Movie Card Component matching Figma layout
 export default function MovieCard({ movie }) {
-  const { executeProtected } = useAuth();
-  const navigate = useNavigate();
   const [isSynopsisOpen, setIsSynopsisOpen] = useState(false);
   const synopsis = movie?.synopsis || movie?.description || movie?.overview;
+  const detailPath = `/movies/${movie?.slug || movie?.id}`;
 
   return (
     <div
@@ -21,6 +19,7 @@ export default function MovieCard({ movie }) {
       }}
       className="movie-card group relative z-0 flex w-full cursor-pointer flex-col justify-between rounded-[10px] border border-gray-800/70 bg-[#151a2a] p-1.5 transition duration-300 hover:z-20 hover:-translate-y-1 hover:border-red-500/50 hover:shadow-xl focus-within:z-20 focus-within:border-red-500/50 focus-within:shadow-xl 2xl:rounded-xl 2xl:p-2"
     >
+      <Link to={detailPath} aria-label={`View details for ${movie?.title || movie?.name || 'movie'}`} className="block rounded-md outline-none focus-visible:ring-2 focus-visible:ring-red-500">
       <div className="space-y-2 2xl:space-y-2">
         {/* Movie Poster Aspect Ratio */}
         <div
@@ -56,18 +55,19 @@ export default function MovieCard({ movie }) {
           )}
         </div>
       </div>
+      </Link>
 
       {/* Ticket Action Footer */}
       <div className="mt-2 flex items-center justify-between gap-1 border-t border-gray-800/50 pt-1.5 2xl:mt-2 2xl:gap-2 2xl:pt-2">
         <span className="min-w-0 text-[9px] leading-3 text-gray-400 2xl:text-[10px] 2xl:leading-[14px]">
           From <strong className="text-white">₾{movie?.fromPrice ?? movie?.price ?? 0}</strong>
         </span>
-        <button
-          onClick={() => executeProtected(() => navigate('/sessions'))}
+        <Link
+          to={detailPath}
           className="shrink-0 rounded-md bg-[#f12d13] px-2 py-1.5 text-[9px] font-bold leading-3 text-white transition hover:bg-red-600 2xl:rounded-md 2xl:px-3 2xl:py-1.5 2xl:text-[10px] 2xl:leading-3"
         >
           Buy Ticket
-        </button>
+        </Link>
       </div>
     </div>
   );
