@@ -8,6 +8,8 @@ export const registerApi = (formData) => API.post('/register', formData, {
 });
 export const getProfileApi = () => API.get('/me');
 export const updateProfileApi = (profile) => API.put('/profile', profile);
+export const getMyTickets = (filter) => API.get('/tickets', { params: filter ? { filter } : {} });
+export const refundOrder = (orderReference) => API.post(`/orders/${encodeURIComponent(orderReference)}/refund`);
 export const logoutApi = () => API.post('/logout');
 
 export const getFeaturedMovies = () => API.get('/movies/featured');

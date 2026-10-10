@@ -27,6 +27,7 @@ export function AuthProvider({ children }) {
   const [pendingAction, setPendingAction] = useState(null);
 
   useEffect(() => {
+    let cancelled = false;
     setupAxiosInterceptors((_error) => {
       setUser(null);
       setToken(null);
@@ -36,12 +37,14 @@ export function AuthProvider({ children }) {
     if (token) {
       getProfileApi()
         .then((response) => {
+          if (cancelled || localStorage.getItem('token') !== token) return;
           const profile = response.data?.data?.user || response.data?.data || response.data?.user || response.data;
           setUser(profile);
           localStorage.setItem('user', JSON.stringify(profile));
         })
         .catch(() => {});
     }
+    return () => { cancelled = true; };
   }, [token]);
 
   const openAuthModal = (action = null) => {
@@ -113,16 +116,17 @@ export function AuthProvider({ children }) {
   };
 
   const logout = async () => {
+    const logoutRequest = logoutApi().catch(() => {});
+    setUser(null);
+    setToken(null);
+    localStorage.removeItem('user');
+    localStorage.removeItem('token');
+    setIsAuthOpen(false);
+    setIsRegisterOpen(false);
+    setPendingAction(null);
     try {
-      await logoutApi();
+      await logoutRequest;
     } catch {
-    } finally {
-      setUser(null);
-      setToken(null);
-      localStorage.removeItem('user');
-      localStorage.removeItem('token');
-      setIsAuthOpen(false);
-      setIsRegisterOpen(false);
     }
   };
 
