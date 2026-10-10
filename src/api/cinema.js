@@ -13,6 +13,7 @@ export const logoutApi = () => API.post('/logout');
 export const getFeaturedMovies = () => API.get('/movies/featured');
 export const getNowPlayingMovies = () => API.get('/movies/now-playing');
 export const getComingSoonMovies = () => API.get('/movies/coming-soon');
+export const notifyMovie = (movie) => API.post(`/movies/${movie}/notify`);
 export const getFilterOptions = () => {
   if (!filterOptionsRequest) {
     filterOptionsRequest = API.get('/filter-options').catch((error) => {
