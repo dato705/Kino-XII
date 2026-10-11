@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useRef } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import {
   getProfileApi,
   loginApi,
@@ -79,11 +79,11 @@ export function AuthProvider({ children }) {
     setIsRegisterOpen(true);
   };
 
-  const closeModals = () => {
+  const closeModals = useCallback(() => {
     setIsAuthOpen(false);
     setIsRegisterOpen(false);
     setPendingAction(null);
-  };
+  }, []);
 
   const executeProtected = (actionFn) => {
     if (user && token) {

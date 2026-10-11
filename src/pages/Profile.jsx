@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { getFilterOptions, getMyTickets, refundOrder } from '../api/cinema';
 import { useAuth } from '../context/AuthContext';
+import { clearIdempotencyKey, getIdempotencyKey } from '../utils/idempotency';
 
 const unwrap = (response) => response?.data?.data ?? response?.data ?? response;
 const TODAY = new Date();
@@ -245,7 +246,9 @@ function ProfilePage({ user, activeTab, setActiveTab, updateProfile }) {
     setRefunding(String(reference));
     setRefundErrors((current) => ({ ...current, [lockKey]: '' }));
     try {
-      const response = await refundOrder(reference);
+      const refundOperation = `refund:${reference}`;
+      const response = await refundOrder(reference, getIdempotencyKey(refundOperation));
+      clearIdempotencyKey(refundOperation);
       const updatedOrder = unwrap(response)?.order || unwrap(response);
       setTicketMessage(`Order ${getOrderReference(updatedOrder)} was refunded.`);
       setTicketRequestId((value) => value + 1);

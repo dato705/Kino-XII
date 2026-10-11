@@ -3,6 +3,8 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import BookingModal from '../components/BookingModal';
 import getSessionDates from '../utils/sessionDates';
+import { clearIdempotencyKey, getIdempotencyKey } from '../utils/idempotency';
+import { getSessionsForRequest } from '../utils/sessionResults';
 import {
   createOrder,
   createSeatHold,
@@ -19,6 +21,7 @@ const FILTERS = [
   { key: 'bands[]', source: 'timeBands', label: 'Time bands', multiple: true },
 ];
 const MOVIES_PER_PAGE = 4;
+const EMPTY_SESSIONS = [];
 
 const unwrap = (response) => response?.data?.data ?? response?.data ?? response;
 
@@ -105,7 +108,7 @@ export default function Sessions() {
   const [filtersLoading, setFiltersLoading] = useState(true);
   const [filtersError, setFiltersError] = useState('');
   const [filtersRetry, setFiltersRetry] = useState(0);
-  const [sessions, setSessions] = useState([]);
+  const [sessionsResult, setSessionsResult] = useState({ key: '', sessions: EMPTY_SESSIONS });
   const [loadedSessionsKey, setLoadedSessionsKey] = useState('');
   const [sessionsErrorResult, setSessionsErrorResult] = useState({ key: '', error: '' });
   const [sessionsRetry, setSessionsRetry] = useState(0);
@@ -136,6 +139,7 @@ export default function Sessions() {
   const filtersQueryString = filterParams.toString();
   const sessionsRequestKey = `${filtersQueryString}:${sessionsRetry}`;
   const loading = loadedSessionsKey !== sessionsRequestKey;
+  const sessions = getSessionsForRequest(sessionsResult, sessionsRequestKey);
   const sessionsError = sessionsErrorResult.key === sessionsRequestKey ? sessionsErrorResult.error : '';
   const queryStringRef = useRef(queryString);
 
@@ -188,7 +192,7 @@ export default function Sessions() {
             session.id ?? `${session.movie?.id ?? session.movie_id ?? session.movie?.title ?? session.movie_title ?? session.title ?? 'sessions'}-${session.startsAt ?? session.starts_at ?? session.start_time ?? index}`,
             session,
           ])).values()];
-          setSessions(uniqueSessions);
+          setSessionsResult({ key: sessionsRequestKey, sessions: uniqueSessions });
           setSessionsErrorResult({ key: sessionsRequestKey, error: '' });
           if (!currentParams.has('date') && meta?.date) {
             currentParams.set('date', meta.date);
@@ -315,19 +319,23 @@ export default function Sessions() {
     setBookingLoading(true);
     setBookingError('');
     setSeatErrors([]);
+    const requestedSeats = selectedSeats.map((id) => {
+      const seat = seats.find((item) => seatId(item) === id);
+      return { seatId: seat.id, ticketType: ticketTypes[id] || 'adult' };
+    });
+    const holdOperation = `seat-hold:${activeSession.id}:${requestedSeats.map(({ seatId: id, ticketType }) => `${id}:${ticketType}`).sort().join(',')}`;
     try {
-      const response = await createSeatHold(activeSession.id, selectedSeats.map((id) => {
-        const seat = seats.find((item) => seatId(item) === id);
-        return { seatId: seat.id, ticketType: ticketTypes[id] || 'adult' };
-      }));
+      const response = await createSeatHold(activeSession.id, requestedSeats, getIdempotencyKey(holdOperation));
       const payload = unwrap(response);
       const holdData = payload?.hold ?? payload;
       const holdId = holdData?.id ?? holdData?.holdId;
       if (!holdId) throw new Error('The API did not return a hold ID.');
+      clearIdempotencyKey(holdOperation);
       setHold({ ...holdData, id: holdId });
       setBookingStep('checkout');
       return true;
     } catch (error) {
+      if (error.response?.status >= 400 && error.response.status < 500) clearIdempotencyKey(holdOperation);
       if (error.response?.status === 409) {
         const contested = error.response.data?.contested ?? error.response.data?.seats ?? [];
         const contestedCodes = contested.map((seat) => typeof seat === 'object' ? seat.code : seat).filter(Boolean);
@@ -374,15 +382,18 @@ export default function Sessions() {
     orderLock.current = true;
     setBookingLoading(true);
     setPaymentErrors({});
+    const orderOperation = `order:${hold.id}`;
     try {
       const response = await createOrder({
         ...payment,
         cardNumber: payment.cardNumber.replace(/\s/g, ''),
         holdId: hold.id,
-      });
+      }, getIdempotencyKey(orderOperation));
+      clearIdempotencyKey(orderOperation);
       setOrder(unwrap(response)?.order ?? unwrap(response));
       setHold(null);
     } catch (error) {
+      if (error.response?.status >= 400 && error.response.status < 500) clearIdempotencyKey(orderOperation);
       const fieldErrors = error.response?.data?.errors;
       if (fieldErrors) {
         setPaymentErrors({

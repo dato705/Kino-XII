@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import useModalAccessibility from '../hooks/useModalAccessibility';
 
 const getErrorText = (value) => Array.isArray(value) ? value[0] : value;
 
@@ -33,15 +34,7 @@ export default function RegisterModal() {
   const emailValid = touched.email && isEmailValid && !errors.email;
   const passwordValid = touched.password && password.length >= 3 && !errors.password;
   const confirmPasswordValid = touched.confirmPassword && Boolean(confirmPassword) && password === confirmPassword && !errors.confirmPassword;
-
-  useEffect(() => {
-    if (!isRegisterOpen) return undefined;
-    const handleKeyDown = (event) => {
-      if (event.key === 'Escape') closeModals();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isRegisterOpen, closeModals]);
+  const dialogRef = useModalAccessibility(isRegisterOpen, closeModals);
 
   if (!isRegisterOpen) return null;
 
@@ -126,6 +119,8 @@ export default function RegisterModal() {
         role="dialog"
         aria-modal="true"
         aria-labelledby="register-title"
+        ref={dialogRef}
+        tabIndex={-1}
         className="relative max-h-[calc(100dvh-24px)] w-full max-w-[540px] overflow-y-auto rounded-[30px] border border-[#292c3e] bg-[#080c1c] px-9 pb-8 pt-8 text-white shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
         onClick={(e) => e.stopPropagation()}
       >

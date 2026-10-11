@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
+import useModalAccessibility from '../hooks/useModalAccessibility';
 
 export default function AuthModal() {
   const { isAuthOpen, closeModals, openRegisterModal, login } = useAuth();
@@ -20,15 +21,7 @@ export default function AuthModal() {
   const showPasswordLengthError = passwordTouched && password.length < 3;
   const displayedPasswordError = passwordError || (showPasswordLengthError ? 'At least 3 characters' : '');
   const passwordIsValid = passwordTouched && password.length >= 3 && !passwordError;
-
-  useEffect(() => {
-    if (!isAuthOpen) return undefined;
-    const handleKeyDown = (event) => {
-      if (event.key === 'Escape') closeModals();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isAuthOpen, closeModals]);
+  const dialogRef = useModalAccessibility(isAuthOpen, closeModals);
 
   if (!isAuthOpen) return null;
 
@@ -81,6 +74,8 @@ export default function AuthModal() {
         role="dialog"
         aria-modal="true"
         aria-labelledby="login-title"
+        ref={dialogRef}
+        tabIndex={-1}
         className="relative w-full max-w-[403px] rounded-[22px] border border-[#292c3e] bg-[#080c1c] px-[26px] pb-[23px] pt-[29px] text-white shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
         onClick={(e) => e.stopPropagation()}
       >
