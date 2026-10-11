@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, HashRouter, Routes, Route } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/AuthContext';
 import Header from './components/Header';
@@ -8,6 +8,8 @@ import MovieDetails from './pages/MovieDetails';
 import Profile from './pages/Profile';
 import AuthModal from './components/AuthModal';
 import RegisterModal from './components/RegisterModal';
+
+const Router = import.meta.env.BASE_URL === '/' ? BrowserRouter : HashRouter;
 
 function AuthRequestStatus() {
   const { token, profileSyncError, profileSyncLoading, retryProfileSync, logoutError, logoutLoading, retryLogout } = useAuth();
